@@ -43,6 +43,11 @@ Next: make the test's clock mock advance past `exp`.
 Five sections, fixed order. The point is **scannability**: same shape every time, so
 your eye knows where to land.
 
+When **multiple agents share one working tree**, each one owns a fenced block and only
+rewrites its own — so they can't clobber each other (live *or* over git), while any
+hand-written text stays untouched and a lone agent's file stays exactly as above. Spec:
+[`docs/whiteboard-format.md`](docs/whiteboard-format.md).
+
 ---
 
 ## The hard part: keeping it fresh

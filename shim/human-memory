@@ -10,12 +10,15 @@ reaches *you* instead of dying in a logfile.
     human-memory show [dir] # print the HUMAN_MEMORY.md for dir (default: cwd)
     human-memory nag        # one line iff THIS dir has a stale session (for
                             #   a shell prompt hook); silent otherwise
+    human-memory set AGENT  # set AGENT's fenced block in the cwd whiteboard from
+                            #   stdin, concurrency-safe (mostly for scripts/tests)
 
-stdlib only; read-only; never writes anything an agent depends on.
+stdlib only. Read-only except `set`, which only ever touches its own agent block.
 """
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 import sys
@@ -23,6 +26,19 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 MEMORY_FILE = "HUMAN_MEMORY.md"
+
+
+def _load_whiteboard():
+    """Find whiteboard.py whether we're running from the repo (shim/) or
+    installed (bin/ → ../lib/)."""
+    here = Path(__file__).resolve().parent
+    for cand in (here / "whiteboard.py", here.parent / "lib" / "whiteboard.py"):
+        if cand.exists():
+            spec = importlib.util.spec_from_file_location("whiteboard", cand)
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+            return mod
+    return None
 # A status file whose process is gone but that was never cleaned (e.g. the
 # watcher was hard-killed) is considered stale-on-disk after this long.
 ORPHAN_SECONDS = 90
@@ -150,7 +166,25 @@ def cmd_nag(_args: list[str]) -> int:
     return 0
 
 
-COMMANDS = {"status": cmd_status, "show": cmd_show, "nag": cmd_nag}
+def cmd_set(args: list[str]) -> int:
+    """Set AGENT's block in the cwd whiteboard from stdin (concurrency-safe)."""
+    if not args:
+        print("usage: human-memory set AGENT  (body on stdin)", file=sys.stderr)
+        return 2
+    wb = _load_whiteboard()
+    if wb is None:
+        print("human-memory: whiteboard.py not found", file=sys.stderr)
+        return 1
+    body = sys.stdin.read()
+    try:
+        wb.update_file(Path.cwd() / MEMORY_FILE, args[0], body)
+    except (ValueError, TimeoutError, OSError) as e:
+        print(f"human-memory: {e}", file=sys.stderr)
+        return 1
+    return 0
+
+
+COMMANDS = {"status": cmd_status, "show": cmd_show, "nag": cmd_nag, "set": cmd_set}
 
 
 def main(argv: list[str]) -> int:

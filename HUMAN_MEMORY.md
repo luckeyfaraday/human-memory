@@ -1,12 +1,20 @@
 # HUMAN_MEMORY.md
 
 ## Current State
-On branch `feat/surface-staleness` (stacked on `feat/config-toml`/PR #3). Built
-the staleness *viewer* — staleness now reaches the user instead of dying in a
-log — plus the N1 shim-recursion guard. Implemented, tested, ready to PR.
+On branch `feat/whiteboard-partition` (stack: #3 config → #4 surface → this).
+Built the concurrency-safe per-agent whiteboard updater — the answer to "how do
+parallel agents share one HUMAN_MEMORY.md" and the primitive draft_update needs.
+Implemented + tested (incl. real multi-process concurrency). Ready to PR.
 
 ## What Just Happened
-- **Surface staleness** (this branch): watcher now publishes one atomic JSON
+- **Whiteboard partition** (this branch): `shim/whiteboard.py` — automated
+  writers own fenced `<!-- hm:agent=X -->` blocks; unfenced human text is sacred;
+  each writer does a locked, atomic RMW of only its own block. Single-agent stays
+  byte-identical. `tests/test_whiteboard.py` (first tests in the repo): purity,
+  idempotency, removal, sacred-text, + two real multi-process concurrency tests
+  (6 disjoint agents; 8 writers same agent) — all pass. `human-memory set AGENT`
+  exposes it; installers ship whiteboard.py; spec in docs/whiteboard-format.md.
+- **Surface staleness** (PR #4): watcher publishes one atomic JSON
   status file per session under `~/.agent-memory/state/`; cleared on exit (and
   pruned if a watcher is killed). New `shim/human-memory` CLI: `status` (live
   table of every agent + stale/fresh/behind), `show` (print a whiteboard),
@@ -24,12 +32,13 @@ log — plus the N1 shim-recursion guard. Implemented, tested, ready to PR.
   llm-drafter design doc (PR #2, main).
 
 ## Pending
-- [ ] Open PR for feat/surface-staleness (stacked on #3)
+- [ ] Open PR for feat/whiteboard-partition (stacked on #4)
 - [ ] draft_update() per docs/llm-drafter-design.md — DECISIONS MADE (mine, owner
       delegated): quiescence-draft + quiescence-promote, cheap model, hybrid
-      deterministic+LLM. N1 env-guard done; still need shim to export --real-bin.
-- [ ] Multi-agent whiteboard merge — open project question (two agents, one repo,
-      one HUMAN_MEMORY.md → clobber). Decide before draft_update.
+      deterministic+LLM. Now has its write primitive (whiteboard.update_file) AND
+      the N1 env-guard. Still need shim to export the resolved real bin (--real-bin).
+- [x] Multi-agent whiteboard merge — DECIDED + BUILT: per-agent fenced blocks,
+      locked atomic per-block writes. (was the blocker for draft_update)
 - [ ] Polling → native inotify / ReadDirectoryChangesW
 - [ ] Resolution override / multi-agent config wiring
 - [ ] Code-sign Windows scripts
