@@ -20,6 +20,7 @@ upgrade.
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import sys
 import time
@@ -186,6 +187,29 @@ def log_line(log_path: Path, msg: str) -> None:
         pass
 
 
+def write_state(state_path: Path, payload: dict) -> None:
+    """Publish this watcher's live status as JSON for `human-memory` to read.
+
+    Written atomically (tmp + replace) on every poll so a reader never sees a
+    half-written file. Best-effort: surfacing must never break the watcher.
+    """
+    payload = {**payload, "updated": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")}
+    try:
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = state_path.with_suffix(state_path.suffix + ".tmp")
+        tmp.write_text(json.dumps(payload))
+        tmp.replace(state_path)
+    except OSError:
+        pass
+
+
+def clear_state(state_path: Path) -> None:
+    try:
+        state_path.unlink()
+    except OSError:
+        pass
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--agent", required=True)
@@ -203,6 +227,9 @@ def main() -> int:
     log_dir.mkdir(parents=True, exist_ok=True)
     session = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
     log_path = log_dir / f"{args.agent}-{session}-{args.agent_pid}.log"
+    # Live status lives beside the logs (…/log → …/state) so `human-memory` can
+    # read every active session. Keyed by agent+pid: unique per watcher.
+    state_path = log_dir.parent / "state" / f"{args.agent}-{args.agent_pid}.json"
 
     log_line(log_path, f"watcher start agent={args.agent} pid={args.agent_pid} cwd={root}")
     log_line(log_path, f"config: {cfg_note}")
@@ -217,46 +244,65 @@ def main() -> int:
     last_nag = 0.0
     work_started_at: float | None = None
 
-    while agent_alive(args.agent_pid):
-        time.sleep(cfg.poll_seconds)
-        # Re-check before doing work: if the agent died during the sleep, exit
-        # now instead of burning one last scan against a dead session.
-        if not agent_alive(args.agent_pid):
-            break
+    def publish(stale: bool, work_age: float) -> None:
+        write_state(state_path, {
+            "agent": args.agent,
+            "pid": args.agent_pid,
+            "cwd": str(root),
+            "stale": stale,
+            "unrecorded_edits": unrecorded_edits,
+            "work_age_s": int(work_age),
+            "whiteboard_exists": (root / MEMORY_FILE).exists(),
+        })
 
-        newest, _count = scan_tree(root, cfg.ignore_dirs, cfg.ignore_suffixes)
-        mem_mtime = memory_mtime(root)
+    publish(stale=False, work_age=0)
+    try:
+        while agent_alive(args.agent_pid):
+            time.sleep(cfg.poll_seconds)
+            # Re-check before doing work: if the agent died during the sleep,
+            # exit now instead of burning one last scan against a dead session.
+            if not agent_alive(args.agent_pid):
+                break
 
-        # Did the whiteboard get updated? Reset the staleness accounting.
-        if mem_mtime is not None and (last_mem_mtime is None or mem_mtime > last_mem_mtime):
-            if unrecorded_edits:
-                log_line(log_path, f"fresh: {MEMORY_FILE} updated, clearing "
-                                   f"{unrecorded_edits} unrecorded edit(s)")
-            last_mem_mtime = mem_mtime
-            unrecorded_edits = 0
-            work_started_at = None
+            newest, _count = scan_tree(root, cfg.ignore_dirs, cfg.ignore_suffixes)
+            mem_mtime = memory_mtime(root)
 
-        # Did work advance since we last looked?
-        if newest > last_seen_newest:
-            unrecorded_edits += 1
-            last_seen_newest = newest
-            if work_started_at is None:
-                work_started_at = now()
+            # Did the whiteboard get updated? Reset the staleness accounting.
+            if mem_mtime is not None and (last_mem_mtime is None or mem_mtime > last_mem_mtime):
+                if unrecorded_edits:
+                    log_line(log_path, f"fresh: {MEMORY_FILE} updated, clearing "
+                                       f"{unrecorded_edits} unrecorded edit(s)")
+                last_mem_mtime = mem_mtime
+                unrecorded_edits = 0
+                work_started_at = None
 
-        # Is the memory stale relative to the work?
-        work_age = (now() - work_started_at) if work_started_at else 0
-        stale = unrecorded_edits >= cfg.stale_edit_threshold or (
-            work_started_at is not None and work_age >= cfg.stale_seconds_threshold
-            and unrecorded_edits > 0
-        )
+            # Did work advance since we last looked?
+            if newest > last_seen_newest:
+                unrecorded_edits += 1
+                last_seen_newest = newest
+                if work_started_at is None:
+                    work_started_at = now()
 
-        if stale and (now() - last_nag) > cfg.stale_seconds_threshold:
-            last_nag = now()
-            msg = (f"STALE: {unrecorded_edits} edit(s) since {MEMORY_FILE} last moved "
-                   f"({int(work_age)}s of unrecorded work). Whiteboard is behind.")
-            log_line(log_path, msg)
-            # NEXT: draft a suggested HUMAN_MEMORY.md update from the diff.
-            # draft_update(root, log_path)  # stubbed — see README known limitations
+            # Is the memory stale relative to the work?
+            work_age = (now() - work_started_at) if work_started_at else 0
+            stale = unrecorded_edits >= cfg.stale_edit_threshold or (
+                work_started_at is not None and work_age >= cfg.stale_seconds_threshold
+                and unrecorded_edits > 0
+            )
+
+            publish(stale=stale, work_age=work_age)
+
+            if stale and (now() - last_nag) > cfg.stale_seconds_threshold:
+                last_nag = now()
+                msg = (f"STALE: {unrecorded_edits} edit(s) since {MEMORY_FILE} last moved "
+                       f"({int(work_age)}s of unrecorded work). Whiteboard is behind.")
+                log_line(log_path, msg)
+                # NEXT: draft a suggested HUMAN_MEMORY.md update from the diff.
+                # draft_update(root, log_path)  # stubbed — see README known limitations
+    finally:
+        # Always retract our status when the session ends, so `human-memory`
+        # never reports a dead session as live.
+        clear_state(state_path)
 
     log_line(log_path, "watcher stop (agent exited)")
     return 0

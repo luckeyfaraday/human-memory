@@ -1,0 +1,89 @@
+# HUMAN_MEMORY.md format — single- and multi-agent
+
+**Status:** Adopted. Implemented by `shim/whiteboard.py` (`replace_agent_block`,
+`update_file`) and tested in `tests/test_whiteboard.py`.
+
+## Single agent (the default — unchanged)
+
+One file at the working-tree root, five fixed sections in fixed order:
+
+```markdown
+# HUMAN_MEMORY.md
+
+## Current State
+## What Just Happened
+## Pending
+## Key Decisions
+## Where I Left Off
+```
+
+A human (or a lone agent) editing by hand writes exactly this. No markers, no
+ceremony. This is byte-for-byte what the project shipped on day one.
+
+## Multiple agents in the same working tree
+
+This happens (sometimes you point two agents at one tree). The rule that keeps
+them from clobbering each other:
+
+> **Unfenced content is sacred. Each automated writer owns exactly one fenced
+> block and only ever rewrites its own.**
+
+A block is delimited by HTML comments (invisible when rendered):
+
+```markdown
+# HUMAN_MEMORY.md
+
+any unfenced text here is the human's — agents never touch it
+
+<!-- hm:agent=claude -->
+## Current State
+…claude's five sections…
+<!-- /hm:agent=claude -->
+
+<!-- hm:agent=codex -->
+## Current State
+…codex's five sections…
+<!-- /hm:agent=codex -->
+```
+
+### Why this shape
+
+- **No live clobber.** Two agents writing at once touch disjoint byte ranges. The
+  writer takes a short lock and does an atomic read-modify-write of *only* its own
+  block (`update_file`), so simultaneous updates can't lose each other.
+- **No git conflict.** Distinct blocks are distinct hunks, so parallel branches
+  merge cleanly instead of fighting over the same lines. The PR #1 clobber — an
+  agent overwriting the whole file — becomes structurally impossible for automated
+  writers.
+- **No ownership ambiguity.** Because unfenced text is never auto-edited, there's
+  no question of "who owns the existing plain content" when a second agent appears.
+  The human's notes and each agent's block coexist.
+- **Degrades to nothing.** One agent that never fences = a plain file = the
+  single-agent format above. The machinery only appears when a second automated
+  writer does.
+
+### Cross-agent view
+
+You don't read three blocks by hand to understand a swarm — `human-memory` does
+that: `human-memory status` shows every running agent and its staleness across all
+directories, and `human-memory show` prints a tree's whiteboard. File-level
+partitioning is for *write safety*; the swarm overview lives in the viewer.
+
+## Programmatic access
+
+```python
+from whiteboard import update_file   # ships to ~/.agent-memory/lib/
+update_file(path, "claude", body)    # set claude's block (locked, atomic)
+update_file(path, "claude", None)    # remove it
+```
+
+or from the shell, concurrency-safe:
+
+```bash
+echo "## Current State
+…" | human-memory set claude
+```
+
+This is the primitive a future watcher-driven `draft_update()` will call (see
+[llm-drafter-design.md](llm-drafter-design.md)), so automated drafting inherits
+the same no-clobber guarantee for free.

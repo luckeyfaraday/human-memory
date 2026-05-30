@@ -26,6 +26,15 @@ foreach ($d in @($binDir, $libDir, $logDir)) { New-Item -ItemType Directory -For
 # the watcher.
 Copy-Item -Force (Join-Path $srcWin 'agent-shim.ps1') (Join-Path $binDir 'agent-shim.ps1')
 Copy-Item -Force (Join-Path $srcRoot 'watcher.py')     (Join-Path $libDir 'watcher.py')
+Copy-Item -Force (Join-Path $srcRoot 'whiteboard.py')  (Join-Path $libDir 'whiteboard.py')
+
+# The viewer (stdlib, cross-platform). The script has no extension, so install a
+# .cmd wrapper that runs it with python — that's what cmd.exe/PowerShell resolve.
+Copy-Item -Force (Join-Path $srcRoot 'human-memory') (Join-Path $libDir 'human-memory')
+@'
+@ECHO OFF
+python "%~dp0..\lib\human-memory" %*
+'@ | Set-Content -Encoding ASCII (Join-Path $binDir 'human-memory.cmd')
 
 # Seed config.toml from the example, but never clobber an existing one — the
 # user's tuning must survive re-installs.
