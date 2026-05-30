@@ -1,0 +1,24 @@
+# human-memory configuration — copied to ~/.agent-memory/config.toml on install
+# (only if one doesn't already exist; your edits are never clobbered on re-install).
+# All keys are optional; anything omitted falls back to the built-in default
+# shown below. Read by shim/watcher.py.
+
+[watcher]
+# How often the watcher scans the working tree for changes, in seconds.
+poll_seconds = 5
+
+# Nag once this many file-edits have happened since HUMAN_MEMORY.md last moved.
+stale_edit_threshold = 8
+
+# ...or once work has been advancing this long with the whiteboard frozen.
+stale_seconds_threshold = 180
+
+# Directory names skipped entirely while scanning (any dotfile dir is also
+# skipped automatically). Replaces the default set if specified.
+ignore_dirs = [
+    ".git", "node_modules", ".venv", "__pycache__", ".context-workspace",
+    ".agent-memory", "dist", "build", "target", ".next", ".cache",
+]
+
+# File suffixes that don't count as "work" for staleness purposes.
+ignore_suffixes = [".pyc", ".log", ".swp", ".tmp"]

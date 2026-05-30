@@ -243,12 +243,30 @@ add an exclusion. (Note: invoking the shim from inside another tool's
 `powershell -ExecutionPolicy Bypass -Command …` wrapper can still trip
 "PowerShell spawning PowerShell" heuristics — that's the wrapper, not the shim.)
 
+### Configuration
+
+Tunables live in `~/.agent-memory/config.toml` (seeded from `shim/config.toml.example`
+on install — re-installing never clobbers your edits). Every key is optional and falls
+back to a built-in default:
+
+```toml
+[watcher]
+poll_seconds = 5              # how often the watcher scans the tree
+stale_edit_threshold = 8      # nag after this many edits since the whiteboard moved
+stale_seconds_threshold = 180 # ...or this long with work advancing and memory frozen
+ignore_dirs = [".git", "node_modules", "..."]   # dirs skipped while scanning
+ignore_suffixes = [".pyc", ".log", ".swp", ".tmp"]
+```
+
+A missing, malformed, or partially-bad config never crashes the watcher — it logs what
+went wrong and falls back to defaults (config problems are reported, not silent).
+
 ### Known limitations (MVP)
 
 - Watcher polls instead of using `inotify` — fine for a prototype, will burn a little
   idle CPU. Native inotify is the planned upgrade.
-- "Draft an update from the diff" is stubbed — currently warns only.
-- No config file parsing yet; thresholds are constants. `config.toml` is the next step.
+- "Draft an update from the diff" is stubbed — currently warns only. Design recorded in
+  `docs/llm-drafter-design.md`.
 - Resolution override / multi-agent config not yet wired.
 
 ---

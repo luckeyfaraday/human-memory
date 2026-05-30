@@ -27,6 +27,16 @@ foreach ($d in @($binDir, $libDir, $logDir)) { New-Item -ItemType Directory -For
 Copy-Item -Force (Join-Path $srcWin 'agent-shim.ps1') (Join-Path $binDir 'agent-shim.ps1')
 Copy-Item -Force (Join-Path $srcRoot 'watcher.py')     (Join-Path $libDir 'watcher.py')
 
+# Seed config.toml from the example, but never clobber an existing one — the
+# user's tuning must survive re-installs.
+$configFile = Join-Path $agentHome 'config.toml'
+if (-not (Test-Path -LiteralPath $configFile)) {
+    Copy-Item -Force (Join-Path $srcRoot 'config.toml.example') $configFile
+    Write-Host "  wrote default config: $configFile"
+} else {
+    Write-Host "  kept existing config: $configFile"
+}
+
 foreach ($a in $agents) {
     # .ps1 wins in PowerShell, .cmd wins in cmd.exe -- install both so the shim
     # is picked up whichever shell you launch the agent from.
