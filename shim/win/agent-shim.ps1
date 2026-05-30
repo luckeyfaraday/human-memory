@@ -64,12 +64,18 @@ if (-not $realBin) {
 # launch. Start-Process returns immediately, so the watcher is detached; it
 # tracks THIS process's PID and exits when the agent session ends. Best-effort
 # throughout -- it must never break the agent.
-$python = (Get-Command pythonw -ErrorAction SilentlyContinue).Source
-if (-not $python) {
-    $py = (Get-Command python -ErrorAction SilentlyContinue).Source
-    if ($py) {
-        $cand = Join-Path (Split-Path -Parent $py) 'pythonw.exe'
-        if (Test-Path -LiteralPath $cand) { $python = $cand }
+# N1 -- shim-recursion guard: when our own tooling invokes a shimmed agent
+# (e.g. a future watcher-driven draft_update calling `claude -p`), skip the
+# watcher so we don't spawn a nested one on every internal call.
+$python = $null
+if (-not $env:AGENT_MEMORY_INTERNAL) {
+    $python = (Get-Command pythonw -ErrorAction SilentlyContinue).Source
+    if (-not $python) {
+        $py = (Get-Command python -ErrorAction SilentlyContinue).Source
+        if ($py) {
+            $cand = Join-Path (Split-Path -Parent $py) 'pythonw.exe'
+            if (Test-Path -LiteralPath $cand) { $python = $cand }
+        }
     }
 }
 if ($python -and (Test-Path -LiteralPath $watcher)) {

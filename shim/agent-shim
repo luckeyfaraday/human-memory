@@ -69,8 +69,14 @@ fi
 # 2. Spawn the detached watcher (best-effort; must never break the agent).
 #    --agent-pid $$ : the shim's PID becomes the agent's PID after exec, so the
 #    watcher can poll it and exit when the agent exits.
+#
+#    N1 — shim-recursion guard. When our own tooling invokes a shimmed agent
+#    (e.g. a future watcher-driven draft_update calling `claude -p`), we'd
+#    otherwise re-enter the shim and spawn a *nested* watcher every time. If
+#    AGENT_MEMORY_INTERNAL is set, skip the watcher and just hand off.
 # ---------------------------------------------------------------------------
-if [[ -x "$(command -v python3 || true)" && -f "$watcher" ]]; then
+if [[ -z "${AGENT_MEMORY_INTERNAL:-}" \
+      && -x "$(command -v python3 || true)" && -f "$watcher" ]]; then
   mkdir -p "$log_dir" 2>/dev/null || true
   setsid python3 "$watcher" \
       --agent "$self_name" \

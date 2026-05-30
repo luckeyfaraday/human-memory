@@ -112,6 +112,10 @@ running** — it can throttle the work they actually care about.
   Mitigation: call the **real resolved binary** (the shim already computed it; pass it
   down as `--real-bin`) **and** set `AGENT_MEMORY_INTERNAL=1` so any accidental shim
   hit refuses to spawn a nested watcher.
+  **STATUS (partial): the `AGENT_MEMORY_INTERNAL=1` half is now implemented** — both
+  `shim/agent-shim` and `shim/win/agent-shim.ps1` skip spawning a watcher when it's
+  set. Still TODO for the drafter: have the shim export the resolved real binary so the
+  watcher can invoke it directly as `--real-bin` rather than re-resolving.
 - **N2 — Trigger reuses existing staleness machinery.** Don't draft every poll. The
   watcher already computes "work advanced while memory froze" — that *is* the draft
   trigger. Draft on that event, with thresholds tunable down for "continuous."

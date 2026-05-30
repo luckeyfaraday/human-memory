@@ -21,6 +21,8 @@ mkdir -p "$bin_dir" "$lib_dir" "$log_dir"
 
 install -m 0755 "$src_dir/agent-shim" "$bin_dir/agent-shim"
 install -m 0755 "$src_dir/watcher.py" "$lib_dir/watcher.py"
+# The viewer — a real command (not a shimmed agent name) for seeing staleness.
+install -m 0755 "$src_dir/human-memory" "$bin_dir/human-memory"
 
 # Seed config.toml from the example, but never clobber an existing one — the
 # user's tuning must survive re-installs.
@@ -45,4 +47,9 @@ echo
 echo "    export PATH=\"$bin_dir:\$PATH\""
 echo
 echo "Verify with:  type -a claude   # the first hit should be $bin_dir/claude"
+echo
+echo "See staleness across all running agents:  human-memory"
+echo "Optional — get nagged at your prompt when the whiteboard falls behind:"
+echo "  add to ~/.bashrc:  PROMPT_COMMAND='human-memory nag; '\$PROMPT_COMMAND"
+echo
 echo "Uninstall:    remove that PATH line and  rm -rf $AGENT_MEMORY_HOME"

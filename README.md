@@ -160,10 +160,12 @@ not absolute time.
     claude  -> agent-shim
     codex   -> agent-shim
     opencode-> agent-shim
+    human-memory      # the viewer (this repo: shim/human-memory)
   lib/
     watcher.py        # freshness engine (this repo: shim/watcher.py)
   config.toml         # binary overrides, thresholds, ignore globs
   log/                # watcher logs, per-session
+  state/              # live per-session status the viewer reads (auto-cleaned)
 ```
 
 ---
@@ -172,7 +174,7 @@ not absolute time.
 
 1. **Convention** — lock the `HUMAN_MEMORY.md` format; add it to agent configs/prompts.
    *(format defined above)*
-2. **Passive dashboard** — staleness detection + a memory viewer. *(watcher MVP, this repo)*
+2. **Passive dashboard** — staleness detection + a memory viewer. *(watcher + `human-memory`, this repo)*
 3. **Transparent shim** — invisible PATH interception. *(shim prototype, this repo)*
 4. **Optional enforcement** — team mode that can block/nag on chronically stale memory.
 
@@ -186,6 +188,9 @@ This repo currently contains a **working proof-of-concept** of stages 2–3:
   + Git Bash / WSL).
 - `shim/watcher.py` — polling freshness engine (Python 3, stdlib only;
   cross-platform — Windows liveness uses a non-destructive handle probe, see below).
+- `shim/human-memory` — the viewer: `human-memory` shows a live status table of
+  every running agent and whether each one's whiteboard is stale; `human-memory show`
+  prints a whiteboard; `human-memory nag` is a one-liner for a shell prompt hook.
 - `shim/install.sh` — sets up `~/.agent-memory/bin`, symlinks, and prints the
   one `PATH` line to add to your shell rc.
 - `shim/win/` — the Windows port: `agent-shim.ps1` (PowerShell engine),
@@ -198,8 +203,27 @@ This repo currently contains a **working proof-of-concept** of stages 2–3:
 ```bash
 shim/install.sh                      # creates ~/.agent-memory, symlinks, prints PATH line
 # add the printed line to ~/.bashrc, then open a new shell
-claude --version                     # runs the REAL claude; watcher spins up underneath
-cat ~/.agent-memory/log/*.log        # see what the watcher noticed
+claude                               # runs the REAL claude; watcher spins up underneath
+human-memory                         # status table of every running agent + staleness
+human-memory show                    # print the current dir's HUMAN_MEMORY.md
+```
+
+`human-memory` reads each watcher's live status, so a stale whiteboard reaches your eyes
+instead of dying in a logfile. Example:
+
+```
+AGENT   PID     STATE  BEHIND  AGE  DIR
+claude  48213   STALE  6       12s  ~/work/api
+codex   48230   fresh  0       3s   ~/work/web
+
+1 session(s) STALE — their HUMAN_MEMORY.md is behind the work.
+```
+
+Optional — get nagged automatically at your shell prompt when the current dir falls
+behind (the installer prints this line):
+
+```bash
+PROMPT_COMMAND='human-memory nag; '$PROMPT_COMMAND
 ```
 
 To uninstall: remove the `PATH` line and `rm -rf ~/.agent-memory`.
