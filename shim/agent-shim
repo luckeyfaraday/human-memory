@@ -1,0 +1,88 @@
+#!/usr/bin/env bash
+# agent-shim — transparent PATH shim for human-memory.
+#
+# busybox-style: this one file behaves as whichever agent name it is invoked
+# under (claude / codex / opencode / ...). Symlink the agent names to it and
+# put the containing dir EARLIEST in PATH.
+#
+#   ~/.agent-memory/bin/claude   -> agent-shim
+#   ~/.agent-memory/bin/codex    -> agent-shim
+#   ~/.agent-memory/bin/opencode -> agent-shim
+#
+# It (1) spawns a detached background watcher, then (2) exec's the REAL binary
+# with all args untouched. Because it exec's, the shim process is replaced and
+# the terminal talks directly to the real agent — perfect TTY/signal/exit
+# transparency. The watcher outlives the handoff and exits when the agent does.
+
+set -euo pipefail
+
+# Name we're impersonating, e.g. "claude".
+self_name="$(basename "$0")"
+
+# realpath of our own bin dir, so we can skip it during resolution and never
+# infinitely re-exec ourselves.
+shim_dir="$(cd "$(dirname "$(realpath "$0")")" && pwd)"
+
+AGENT_MEMORY_HOME="${AGENT_MEMORY_HOME:-$HOME/.agent-memory}"
+watcher="$AGENT_MEMORY_HOME/lib/watcher.py"
+log_dir="$AGENT_MEMORY_HOME/log"
+
+# ---------------------------------------------------------------------------
+# 1. Resolve the REAL binary.
+#    Walk PATH left to right; skip any entry that realpaths into our shim dir;
+#    dedupe (live PATH can list a dir multiple times); take the first match.
+#    A configured absolute override wins if present.
+# ---------------------------------------------------------------------------
+resolve_real() {
+  # Explicit override: AGENT_MEMORY_REAL_CLAUDE=/path, etc.
+  local override_var="AGENT_MEMORY_REAL_${self_name^^}"
+  if [[ -n "${!override_var:-}" && -x "${!override_var}" ]]; then
+    printf '%s\n' "${!override_var}"
+    return 0
+  fi
+
+  local seen=":"
+  local IFS=':'
+  for dir in $PATH; do
+    [[ -z "$dir" ]] && continue
+    local rp
+    rp="$(realpath -m "$dir" 2>/dev/null)" || continue
+    [[ "$rp" == "$shim_dir" ]] && continue        # never recurse into ourselves
+    case "$seen" in *":$rp:"*) continue ;; esac    # dedupe
+    seen="$seen$rp:"
+    local cand="$dir/$self_name"
+    if [[ -x "$cand" && ! -d "$cand" ]]; then
+      printf '%s\n' "$cand"
+      return 0
+    fi
+  done
+  return 1
+}
+
+real_bin="$(resolve_real || true)"
+if [[ -z "$real_bin" ]]; then
+  echo "agent-shim: could not find real '$self_name' on PATH (after skipping shim dir)" >&2
+  exit 127
+fi
+
+# ---------------------------------------------------------------------------
+# 2. Spawn the detached watcher (best-effort; must never break the agent).
+#    --agent-pid $$ : the shim's PID becomes the agent's PID after exec, so the
+#    watcher can poll it and exit when the agent exits.
+# ---------------------------------------------------------------------------
+if [[ -x "$(command -v python3 || true)" && -f "$watcher" ]]; then
+  mkdir -p "$log_dir" 2>/dev/null || true
+  setsid python3 "$watcher" \
+      --agent "$self_name" \
+      --agent-pid "$$" \
+      --cwd "$PWD" \
+      --log-dir "$log_dir" \
+      </dev/null >/dev/null 2>&1 &
+  disown 2>/dev/null || true
+fi
+
+# ---------------------------------------------------------------------------
+# 3. Hand off. exec replaces this process — from here the terminal is talking
+#    directly to the real agent.
+# ---------------------------------------------------------------------------
+exec "$real_bin" "$@"

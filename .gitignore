@@ -1,0 +1,6 @@
+# Athena / context-workspace auto-generated session state
+.context-workspace/
+
+# Watcher runtime output (installed location is ~/.agent-memory, but ignore stray local logs)
+*.log
+__pycache__/
