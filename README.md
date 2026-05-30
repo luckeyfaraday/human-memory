@@ -182,10 +182,15 @@ not absolute time.
 
 This repo currently contains a **working proof-of-concept** of stages 2–3:
 
-- `shim/agent-shim` — the generic, busybox-style transparent shim (bash).
-- `shim/watcher.py` — polling freshness engine (Python 3, stdlib only).
+- `shim/agent-shim` — the generic, busybox-style transparent shim (bash; Unix
+  + Git Bash / WSL).
+- `shim/watcher.py` — polling freshness engine (Python 3, stdlib only;
+  cross-platform — Windows liveness uses a non-destructive handle probe, see below).
 - `shim/install.sh` — sets up `~/.agent-memory/bin`, symlinks, and prints the
   one `PATH` line to add to your shell rc.
+- `shim/win/` — the Windows port: `agent-shim.ps1` (PowerShell engine),
+  `agent-shim.cmd` (cmd.exe companion), and `install.ps1`. Same model, adapted
+  to a platform with no `exec()` (see *Windows* below).
 - `HUMAN_MEMORY.md` — this project dogfooding its own format.
 
 ### Try it
@@ -198,6 +203,45 @@ cat ~/.agent-memory/log/*.log        # see what the watcher noticed
 ```
 
 To uninstall: remove the `PATH` line and `rm -rf ~/.agent-memory`.
+
+### Windows (PowerShell + cmd.exe)
+
+Windows has no `exec()`, so the shim can't *replace* itself with the real agent.
+Instead `shim/win/agent-shim.ps1` stays alive as the parent, runs the real agent
+**in the same console** (so the TUI, ANSI, raw mode and Ctrl+C are all native),
+and propagates its exit code. The watcher is launched with `pythonw` (no console
+window) and tracks the shim's PID, exiting when the agent session ends. Which
+shim wins depends on the shell — PowerShell prefers `claude.ps1`, cmd.exe prefers
+`claude.cmd` — so both are installed.
+
+```powershell
+powershell -ExecutionPolicy RemoteSigned -File shim\win\install.ps1   # copies into ~\.agent-memory, prints the PATH line
+# Put the printed line earliest on PATH (it prints a session command and an
+# optional persistent one — it does NOT edit your environment for you), then:
+claude --version                     # runs the REAL claude; watcher spins up underneath
+Get-Content $HOME\.agent-memory\log\*.log
+```
+
+To uninstall: remove that `PATH` entry and `Remove-Item -Recurse $HOME\.agent-memory`.
+
+### Antivirus / SmartScreen
+
+Be aware: a transparent PATH shim that intercepts commands and runs a hidden
+background watcher is, *behaviorally*, indistinguishable from a PATH-hijacking
+trojan — so heuristic AV (and AMSI on Windows) may flag it. This is a real
+false-positive risk for end users, not just a theoretical one. The Windows port
+is deliberately built to minimize the signal:
+
+- launches the watcher with **`pythonw`** (no window) rather than
+  `-WindowStyle Hidden`, which AV weights heavily;
+- the `.cmd` uses **`-ExecutionPolicy RemoteSigned`**, not `Bypass`;
+- `install.ps1` runs **`Unblock-File`** on the installed copies so they're
+  trusted-local.
+
+The durable fix is **code-signing** the scripts; until then, users may need to
+add an exclusion. (Note: invoking the shim from inside another tool's
+`powershell -ExecutionPolicy Bypass -Command …` wrapper can still trip
+"PowerShell spawning PowerShell" heuristics — that's the wrapper, not the shim.)
 
 ### Known limitations (MVP)
 

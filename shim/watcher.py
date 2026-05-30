@@ -44,14 +44,42 @@ def now() -> float:
     return time.time()
 
 
-def agent_alive(pid: int) -> bool:
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True  # exists, just not ours to signal
-    return True
+if sys.platform == "win32":
+    # CAUTION: os.kill(pid, 0) is destructive on Windows — CPython maps every
+    # signal except CTRL_C_EVENT/CTRL_BREAK_EVENT to TerminateProcess, so signal
+    # 0 would *kill the agent we are watching*. Probe the process with a handle
+    # and a zero-timeout wait instead (non-destructive): WAIT_TIMEOUT means the
+    # process is still running, WAIT_OBJECT_0 means it has exited.
+    import ctypes
+    from ctypes import wintypes
+
+    _kernel32 = ctypes.windll.kernel32
+    _kernel32.OpenProcess.restype = wintypes.HANDLE
+    _kernel32.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+    _kernel32.WaitForSingleObject.restype = wintypes.DWORD
+    _kernel32.WaitForSingleObject.argtypes = (wintypes.HANDLE, wintypes.DWORD)
+    _kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
+
+    _SYNCHRONIZE = 0x00100000
+    _WAIT_TIMEOUT = 0x00000102
+
+    def agent_alive(pid: int) -> bool:
+        handle = _kernel32.OpenProcess(_SYNCHRONIZE, False, pid)
+        if not handle:
+            return False  # gone (or never existed / no access)
+        try:
+            return _kernel32.WaitForSingleObject(handle, 0) == _WAIT_TIMEOUT
+        finally:
+            _kernel32.CloseHandle(handle)
+else:
+    def agent_alive(pid: int) -> bool:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            return True  # exists, just not ours to signal
+        return True
 
 
 def scan_tree(root: Path) -> tuple[float, int]:
