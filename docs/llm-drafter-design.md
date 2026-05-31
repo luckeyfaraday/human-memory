@@ -52,7 +52,7 @@ These are settled and don't need re-litigating (but are recorded for the cold re
     `[drafter].model` (default `haiku`) applies here only.
   - `codex` — `codex exec --sandbox read-only --skip-git-repo-check -o <file> <prompt>`;
     answer read from the **-o file** (stdout is status chrome). Requires
-    `stdin=DEVNULL` or it blocks reading stdin. Uses codex's own default model.
+    `stdin=DEVNULL` or it blocks reading stdin. Uses `gpt-5.4-mini`.
   - `opencode` — `opencode run --format json <prompt>`; answer parsed from the
     **JSONL** `type:"text"` events. Its non-JSON format emits nothing to a *pipe*
     (only a TTY/file), so JSON is required when capturing. Uses opencode's default model.
@@ -62,8 +62,11 @@ These are settled and don't need re-litigating (but are recorded for the cold re
   a free file-copy, so the cost is all in the *drafting* — continuous would pay for
   N drafts per work-chunk and then discard all but the one that lands at the next
   settle point. So we draft *at* quiescence + on exit instead: one LLM call per
-  settled chunk, same visible result (checkpoints), a fraction of the spend. (True
-  continuous would only make sense paired with Q1=B live-write, which we rejected.)
+  settled chunk, same visible result (checkpoints), a fraction of the spend. To
+  avoid token bleed in long sessions, mid-session drafts also require enough work
+  (`min_edit_ticks`) and are capped (`max_drafts_per_session`); the final exit
+  checkpoint is controlled separately by `always_on_exit`. (True continuous would
+  only make sense paired with Q1=B live-write, which we rejected.)
 - **D3 — Drafts go to a sidecar, not straight onto the live file.** A wrong
   auto-generated whiteboard is worse than a stale one ("you trust it"). So drafting
   writes to a sidecar (e.g. `HUMAN_MEMORY.md.draft`) and something promotes it to the
@@ -99,13 +102,13 @@ Either way we need: a backup of the prior good version, and a manual override
 live file while reading).
 
 **DECISION: A (quiescence), simplified.** We draft *at* quiescence (work idle
-`quiescence_seconds`, default 25) and on agent exit. Because the per-agent block
+`quiescence_seconds`, default 120) and on agent exit. Because the per-session block
 model (`whiteboard.update_file`, see [whiteboard-format.md](whiteboard-format.md))
 means a writer only ever touches its own fenced block — never the human's text or
-another agent's — there's no need for a separate sidecar file: gating on *when* we
-write (settled checkpoints) gives the trust property the sidecar was for. We back
-up `HUMAN_MEMORY.md` → `HUMAN_MEMORY.md.bak` before each write (one revert away).
-The `.human-memory-promote`/`-hold` overrides are not yet built.
+another session's — there's no need for a separate sidecar file: gating on *when*
+we write (settled checkpoints) gives the trust property the sidecar was for. We
+back up `HUMAN_MEMORY.md` → `HUMAN_MEMORY.md.bak` before each write (one revert
+away). The `.human-memory-promote`/`-hold` overrides are not yet built.
 
 ---
 

@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
-"""whiteboard.py — concurrency-safe, per-agent edits to HUMAN_MEMORY.md.
+"""whiteboard.py — concurrency-safe, per-session edits to HUMAN_MEMORY.md.
 
 When several agents share one working tree (it happens), they must not clobber
 each other's whiteboard. The rule that makes that safe:
 
   * Any UNFENCED content is sacred — it's the human's, never auto-touched.
-  * Each automated writer owns exactly one fenced block, delimited by
-        <!-- hm:agent=NAME -->
+  * Each automated writer owns exactly one fenced block, delimited by a stable
+    owner id (usually agent-pid):
+        <!-- hm:session=OWNER -->
         ...the agent's section...
-        <!-- /hm:agent=NAME -->
+        <!-- /hm:session=OWNER -->
     and only ever rewrites *its own* block.
 
 Disjoint regions → no lost updates when two agents write at once; separate
@@ -25,22 +26,22 @@ import re
 import time
 from pathlib import Path
 
-AGENT_RE = re.compile(r"^[A-Za-z0-9._-]+$")
+OWNER_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 
 
-def _markers(agent: str) -> tuple[str, str]:
-    return f"<!-- hm:agent={agent} -->", f"<!-- /hm:agent={agent} -->"
+def _markers(owner: str) -> tuple[str, str]:
+    return f"<!-- hm:session={owner} -->", f"<!-- /hm:session={owner} -->"
 
 
 def replace_agent_block(content: str, agent: str, body: str | None) -> str:
-    """Return `content` with `agent`'s fenced block set to `body`.
+    """Return `content` with `agent`/owner's fenced block set to `body`.
 
-    body=None removes the block. Everything outside the agent's own block —
-    including other agents' blocks and any unfenced human text — is preserved
+    body=None removes the block. Everything outside the owner's own block —
+    including other sessions' blocks and any unfenced human text — is preserved
     byte-for-byte. Pure function; no I/O. Idempotent for a fixed body.
     """
-    if not AGENT_RE.match(agent):
-        raise ValueError(f"unsafe agent name: {agent!r}")
+    if not OWNER_RE.match(agent):
+        raise ValueError(f"unsafe owner name: {agent!r}")
     start, end = _markers(agent)
     block_re = re.compile(re.escape(start) + r".*?" + re.escape(end), re.DOTALL)
 
@@ -59,8 +60,8 @@ def replace_agent_block(content: str, agent: str, body: str | None) -> str:
 
 
 def extract_agent_block(content: str, agent: str) -> str | None:
-    """Return the body of `agent`'s block (without the markers), or None."""
-    if not AGENT_RE.match(agent):
+    """Return the body of `agent`/owner's block (without the markers), or None."""
+    if not OWNER_RE.match(agent):
         return None
     start, end = _markers(agent)
     m = re.search(re.escape(start) + r"\n?(.*?)\n?" + re.escape(end), content, re.DOTALL)
@@ -107,10 +108,10 @@ class _FileLock:
 
 
 def update_file(path: Path, agent: str, body: str | None, *, timeout: float = 5.0) -> None:
-    """Set `agent`'s block in the HUMAN_MEMORY.md at `path`, concurrency-safe.
+    """Set `agent`/owner's block in the HUMAN_MEMORY.md at `path`, concurrency-safe.
 
     Locked read-modify-write with an atomic replace, so simultaneous writers for
-    different agents never lose each other's updates.
+    different owners never lose each other's updates.
     """
     path = Path(path)
     with _FileLock(path, timeout=timeout):

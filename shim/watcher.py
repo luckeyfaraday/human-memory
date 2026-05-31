@@ -59,10 +59,13 @@ class Config:
     # --- [drafter]: auto-author HUMAN_MEMORY.md. OFF by default — it calls a
     #     model in the background and spends the user's tokens. ---
     draft_enabled: bool = False
-    draft_model: str = "haiku"           # cheap model for the summary
-    draft_quiescence_seconds: float = 25  # draft after work has been idle this long
+    draft_model: str = "haiku"           # Claude-only; Codex/OpenCode use their configured default
+    draft_quiescence_seconds: float = 120  # draft after work has been idle this long
     draft_timeout_seconds: float = 60    # hard cap on the drafter subprocess
     draft_include_git_diff: bool = True
+    draft_min_edit_ticks: int = 3        # avoid LLM calls for tiny pauses
+    draft_max_drafts_per_session: int = 2  # mid-session drafts; exit draft is separate
+    draft_always_on_exit: bool = True
     draft_command: tuple[str, ...] | None = None
 
 
@@ -95,7 +98,8 @@ def load_config(path: Path | None = None) -> tuple[Config, str | None]:
     known = {"poll_seconds", "stale_edit_threshold", "stale_seconds_threshold",
              "ignore_dirs", "ignore_suffixes"}
     known_drafter = {"enabled", "model", "quiescence_seconds", "timeout_seconds",
-                     "include_git_diff", "command"}
+                     "include_git_diff", "min_edit_ticks", "max_drafts_per_session",
+                     "always_on_exit", "command"}
     unknown = (set(table) - known) | {f"drafter.{k}" for k in set(drafter) - known_drafter}
     # Coercing user-supplied values can raise (e.g. int("not-an-int")); a bad
     # config must fall back to defaults, never crash the watcher.
@@ -121,12 +125,24 @@ def load_config(path: Path | None = None) -> tuple[Config, str | None]:
             kwargs["draft_timeout_seconds"] = float(drafter["timeout_seconds"])
         if "include_git_diff" in drafter:
             kwargs["draft_include_git_diff"] = bool(drafter["include_git_diff"])
+        if "min_edit_ticks" in drafter:
+            kwargs["draft_min_edit_ticks"] = int(drafter["min_edit_ticks"])
+        if "max_drafts_per_session" in drafter:
+            kwargs["draft_max_drafts_per_session"] = int(drafter["max_drafts_per_session"])
+        if "always_on_exit" in drafter:
+            kwargs["draft_always_on_exit"] = bool(drafter["always_on_exit"])
         if "command" in drafter:
             cmd = drafter["command"]
             if not isinstance(cmd, list) or not all(isinstance(p, str) for p in cmd):
                 raise ValueError("drafter.command must be an array of strings")
             kwargs["draft_command"] = tuple(cmd)
         config = Config(**kwargs)
+        if config.draft_quiescence_seconds < 0:
+            raise ValueError("drafter.quiescence_seconds must be >= 0")
+        if config.draft_min_edit_ticks < 1:
+            raise ValueError("drafter.min_edit_ticks must be >= 1")
+        if config.draft_max_drafts_per_session < 0:
+            raise ValueError("drafter.max_drafts_per_session must be >= 0")
     except (TypeError, ValueError) as e:
         return defaults, f"config {path} has bad values ({e}); using defaults"
 
@@ -246,6 +262,58 @@ def clear_state(state_path: Path) -> None:
         pass
 
 
+def session_owner(agent: str, pid: int) -> str:
+    """Stable whiteboard owner for one running agent process."""
+    return f"{agent}-{pid}"
+
+
+def bootstrap_missing_memory(root: Path, agent: str, owner: str,
+                             include_git_diff: bool) -> bool:
+    """Create a first whiteboard block without spending model tokens.
+
+    A missing HUMAN_MEMORY.md should not leave a newly shimmed session stuck in
+    "NO FILE". The initial block is deterministic-only; normal quiescence/exit
+    drafts can polish later once actual work has happened.
+    """
+    if drafter is None or whiteboard is None:
+        return False
+    mem_path = root / MEMORY_FILE
+    if mem_path.exists():
+        return False
+    body = drafter.draft_block(
+        root, agent, real_bin=None, model="", timeout=0,
+        prev_block=None, include_git_diff=include_git_diff)
+    whiteboard.update_file(mem_path, owner, body)
+    return True
+
+
+def should_draft_quiescence(*, drafting: bool, unrecorded_edits: int,
+                            last_edit_at: float | None, last_seen_newest: float,
+                            last_drafted_newest: float, draft_count: int,
+                            cfg: Config, now_value: float) -> bool:
+    """Return whether a mid-session quiescence draft should run."""
+    return (
+        drafting
+        and unrecorded_edits >= cfg.draft_min_edit_ticks
+        and last_edit_at is not None
+        and last_seen_newest != last_drafted_newest
+        and draft_count < cfg.draft_max_drafts_per_session
+        and (now_value - last_edit_at) >= cfg.draft_quiescence_seconds
+    )
+
+
+def should_draft_exit(*, drafting: bool, unrecorded_edits: int,
+                      last_seen_newest: float, last_drafted_newest: float,
+                      cfg: Config) -> bool:
+    """Return whether the final checkpoint should draft on agent exit."""
+    return (
+        drafting
+        and cfg.draft_always_on_exit
+        and unrecorded_edits > 0
+        and last_seen_newest != last_drafted_newest
+    )
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--agent", required=True)
@@ -269,11 +337,14 @@ def main() -> int:
     # Live status lives beside the logs (…/log → …/state) so `human-memory` can
     # read every active session. Keyed by agent+pid: unique per watcher.
     state_path = log_dir.parent / "state" / f"{args.agent}-{args.agent_pid}.json"
+    owner = session_owner(args.agent, args.agent_pid)
 
-    log_line(log_path, f"watcher start agent={args.agent} pid={args.agent_pid} cwd={root}")
+    log_line(log_path, f"watcher start agent={args.agent} pid={args.agent_pid} "
+                       f"owner={owner} cwd={root}")
     log_line(log_path, f"config: {cfg_note}")
 
-    if not (root / MEMORY_FILE).exists():
+    mem_path = root / MEMORY_FILE
+    if not mem_path.exists():
         log_line(log_path, f"note: no {MEMORY_FILE} in {root} — agent has no whiteboard yet")
 
     drafting = cfg.draft_enabled and drafter is not None and whiteboard is not None
@@ -281,10 +352,19 @@ def main() -> int:
         log_line(log_path, "drafter enabled but drafter/whiteboard modules missing — disabled")
     elif drafting:
         kind = "hybrid (LLM)" if args.real_bin else "deterministic skeleton (no --real-bin)"
-        log_line(log_path, f"drafter ON: {kind}, model={cfg.draft_model}, "
+        if args.agent == "claude":
+            model_note = f"claude_model={cfg.draft_model}"
+        elif drafter and args.agent in drafter.DEFAULT_COMMANDS:
+            agent_model = drafter.DEFAULT_COMMANDS[args.agent].get("agent_model")
+            model_note = f"{args.agent}_model={agent_model}" if agent_model else (
+                f"{args.agent} default model")
+        else:
+            model_note = f"{args.agent} default model"
+        log_line(log_path, f"drafter ON: {kind}, {model_note}, "
                            f"quiescence={cfg.draft_quiescence_seconds}s")
+        if bootstrap_missing_memory(root, args.agent, owner, cfg.draft_include_git_diff):
+            log_line(log_path, f"bootstrapped {MEMORY_FILE} with deterministic {owner} block")
 
-    mem_path = root / MEMORY_FILE
     # Baseline: edits that happen AFTER the last memory update are "unrecorded".
     last_seen_newest, _ = scan_tree(root, cfg.ignore_dirs, cfg.ignore_suffixes)
     unrecorded_edits = 0
@@ -293,6 +373,7 @@ def main() -> int:
     work_started_at: float | None = None
     last_edit_at: float | None = None
     last_drafted_newest = last_seen_newest
+    draft_count = 0
 
     def publish(stale: bool, work_age: float) -> None:
         write_state(state_path, {
@@ -309,6 +390,7 @@ def main() -> int:
         """Author this agent's block from the work since the last draft. Records
         the work (resets staleness). Best-effort — never breaks the watcher."""
         nonlocal unrecorded_edits, work_started_at, last_mem_mtime, last_drafted_newest
+        nonlocal draft_count
         try:
             content = mem_path.read_text() if mem_path.exists() else ""
         except OSError:
@@ -317,12 +399,12 @@ def main() -> int:
             body = drafter.draft_block(
                 root, args.agent, real_bin=args.real_bin, model=cfg.draft_model,
                 timeout=cfg.draft_timeout_seconds,
-                prev_block=whiteboard.extract_agent_block(content, args.agent),
+                prev_block=whiteboard.extract_agent_block(content, owner),
                 include_git_diff=cfg.draft_include_git_diff,
                 command=list(cfg.draft_command) if cfg.draft_command else None)
             if mem_path.exists():  # one-revert-away safety net
                 shutil.copy2(mem_path, mem_path.with_name(mem_path.name + ".bak"))
-            whiteboard.update_file(mem_path, args.agent, body)
+            whiteboard.update_file(mem_path, owner, body)
         except Exception as e:  # noqa: BLE001 — drafting must never crash the watcher
             log_line(log_path, f"draft ({label}) failed: {e!r}")
             return
@@ -331,7 +413,9 @@ def main() -> int:
         work_started_at = None
         last_drafted_newest = last_seen_newest
         last_mem_mtime = memory_mtime(root)
-        log_line(log_path, f"drafted ({label}): updated {args.agent} block in {MEMORY_FILE}")
+        if label != "exit":
+            draft_count += 1
+        log_line(log_path, f"drafted ({label}): updated {owner} block in {MEMORY_FILE}")
 
     publish(stale=False, work_age=0)
     try:
@@ -380,13 +464,24 @@ def main() -> int:
 
             # Quiescence draft: work happened, then settled — record it now. One
             # draft per settled chunk (last_drafted_newest gate).
-            if (drafting and unrecorded_edits > 0 and last_edit_at is not None
-                    and last_seen_newest != last_drafted_newest
-                    and (now() - last_edit_at) >= cfg.draft_quiescence_seconds):
+            if should_draft_quiescence(
+                    drafting=drafting,
+                    unrecorded_edits=unrecorded_edits,
+                    last_edit_at=last_edit_at,
+                    last_seen_newest=last_seen_newest,
+                    last_drafted_newest=last_drafted_newest,
+                    draft_count=draft_count,
+                    cfg=cfg,
+                    now_value=now()):
                 do_draft("quiescence")
     finally:
         # Final checkpoint: capture any work that never settled before exit.
-        if drafting and unrecorded_edits > 0 and last_seen_newest != last_drafted_newest:
+        if should_draft_exit(
+                drafting=drafting,
+                unrecorded_edits=unrecorded_edits,
+                last_seen_newest=last_seen_newest,
+                last_drafted_newest=last_drafted_newest,
+                cfg=cfg):
             do_draft("exit")
         # Always retract our status so `human-memory` never shows a dead session.
         clear_state(state_path)
