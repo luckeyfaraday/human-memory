@@ -20,12 +20,14 @@ $agents = @('claude', 'codex', 'opencode')
 $binDir = Join-Path $agentHome 'bin'
 $libDir = Join-Path $agentHome 'lib'
 $logDir = Join-Path $agentHome 'log'
-foreach ($d in @($binDir, $libDir, $logDir)) { New-Item -ItemType Directory -Force -Path $d | Out-Null }
+$projectsDir = Join-Path $agentHome 'projects'
+foreach ($d in @($binDir, $libDir, $logDir, $projectsDir)) { New-Item -ItemType Directory -Force -Path $d | Out-Null }
 
 # The engine (used directly as the per-agent .ps1, and called by the .cmd) and
 # the watcher.
 Copy-Item -Force (Join-Path $srcWin 'agent-shim.ps1') (Join-Path $binDir 'agent-shim.ps1')
 Copy-Item -Force (Join-Path $srcRoot 'watcher.py')     (Join-Path $libDir 'watcher.py')
+Copy-Item -Force (Join-Path $srcRoot 'memory_store.py') (Join-Path $libDir 'memory_store.py')
 Copy-Item -Force (Join-Path $srcRoot 'whiteboard.py')  (Join-Path $libDir 'whiteboard.py')
 Copy-Item -Force (Join-Path $srcRoot 'drafter.py')     (Join-Path $libDir 'drafter.py')
 

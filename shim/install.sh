@@ -16,11 +16,13 @@ AGENTS=(claude codex opencode)
 bin_dir="$AGENT_MEMORY_HOME/bin"
 lib_dir="$AGENT_MEMORY_HOME/lib"
 log_dir="$AGENT_MEMORY_HOME/log"
+projects_dir="$AGENT_MEMORY_HOME/projects"
 
-mkdir -p "$bin_dir" "$lib_dir" "$log_dir"
+mkdir -p "$bin_dir" "$lib_dir" "$log_dir" "$projects_dir"
 
 install -m 0755 "$src_dir/agent-shim" "$bin_dir/agent-shim"
 install -m 0755 "$src_dir/watcher.py" "$lib_dir/watcher.py"
+install -m 0644 "$src_dir/memory_store.py" "$lib_dir/memory_store.py"
 install -m 0644 "$src_dir/whiteboard.py" "$lib_dir/whiteboard.py"
 install -m 0644 "$src_dir/drafter.py" "$lib_dir/drafter.py"
 # The viewer — a real command (not a shimmed agent name) for seeing staleness.

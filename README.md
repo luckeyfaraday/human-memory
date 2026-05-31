@@ -11,10 +11,16 @@ all in and out of a single working memory, and you're the bottleneck.
 
 ---
 
-## The artifact: `HUMAN_MEMORY.md`
+## The artifact: human memory
 
 A live state file each agent keeps current as it works. Not a report you read after
-the fact — a running whiteboard you glance at to reload context in ~10 seconds.
+the fact - a running whiteboard you glance at to reload context in ~10 seconds.
+
+By default, human-memory does **not** write files into your projects. Project
+whiteboards live under `~/.agent-memory/projects/<project-id>/HUMAN_MEMORY.md`,
+with metadata beside them for the dashboard/viewer. If you want the old
+repo-local/team-shareable behavior, set `[memory].storage = "project-file"` and
+the whiteboard is written as `HUMAN_MEMORY.md` in the working tree.
 
 ```markdown
 # HUMAN_MEMORY.md
@@ -72,8 +78,8 @@ the command you type to launch it.
 - It forwards everything to the real binary unchanged — same args, same TTY, same
   colors, same exit code. Transparent.
 - *Meanwhile*, in the background, it watches the working directory for file changes,
-  compares their timestamps against `HUMAN_MEMORY.md`, and flags or drafts an update
-  when the whiteboard goes stale relative to the work.
+  compares their timestamps against that project's human-memory file, and flags or
+  drafts an update when the whiteboard goes stale relative to the work.
 
 Zero workflow change. Memory maintenance happens underneath the commands you already
 run.
@@ -119,7 +125,7 @@ anything added later) without per-agent integration.
         │              (process is replaced → perfect
         │               TTY / signal / exit transparency)
         ▼
-  watch cwd for file mods, track HUMAN_MEMORY.md
+  watch cwd for file mods, track project memory
   freshness; warn / draft when stale; exit when
   the agent process exits
 ```
@@ -148,8 +154,9 @@ MVP: a polling loop (no `inotify*` tools on this box; native inotify is a later
 upgrade). Each tick it:
 
 1. Scans the working tree for files modified since last tick (ignoring `.git`,
-   `node_modules`, `HUMAN_MEMORY.md` itself).
-2. Reads `HUMAN_MEMORY.md`'s mtime.
+   `node_modules`, and the repo-local `HUMAN_MEMORY.md` when project-file storage
+   is enabled).
+2. Reads the resolved project memory file's mtime.
 3. If real work has happened but the whiteboard hasn't moved in `N` edits / `T`
    seconds → **stale**.
 4. On stale: emit a warning — and, if drafting is enabled, author the whiteboard from
@@ -170,9 +177,11 @@ not absolute time.
     human-memory      # the viewer (this repo: shim/human-memory)
   lib/
     watcher.py        # freshness engine (this repo: shim/watcher.py)
+    memory_store.py   # central/project-file path resolver
     whiteboard.py     # concurrency-safe per-agent block writer
     drafter.py        # hybrid auto-drafter (deterministic skeleton + optional LLM)
   config.toml         # binary overrides, thresholds, ignore globs
+  projects/           # default per-project HUMAN_MEMORY.md + metadata.json
   log/                # watcher logs, per-session
   state/              # live per-session status the viewer reads (auto-cleaned)
 ```
@@ -197,6 +206,8 @@ This repo currently contains a **working proof-of-concept** of stages 2–3:
   + Git Bash / WSL).
 - `shim/watcher.py` — polling freshness engine (Python 3, stdlib only;
   cross-platform — Windows liveness uses a non-destructive handle probe, see below).
+- `shim/memory_store.py` — resolves each working tree to either central storage
+  under `~/.agent-memory/projects/` or legacy repo-local storage.
 - `shim/human-memory` — the viewer: `human-memory` shows a live status table of
   every running agent and whether each one's whiteboard is stale; `human-memory show`
   prints a whiteboard; `human-memory nag` is a one-liner for a shell prompt hook.
@@ -205,7 +216,7 @@ This repo currently contains a **working proof-of-concept** of stages 2–3:
 - `shim/win/` — the Windows port: `agent-shim.ps1` (PowerShell engine),
   `agent-shim.cmd` (cmd.exe companion), and `install.ps1`. Same model, adapted
   to a platform with no `exec()` (see *Windows* below).
-- `HUMAN_MEMORY.md` — this project dogfooding its own format.
+- `HUMAN_MEMORY.md` — this project dogfooding the repo-local format.
 
 ### Try it
 
@@ -214,10 +225,10 @@ shim/install.sh                      # creates ~/.agent-memory, symlinks, prints
 # add the printed line to ~/.bashrc, then open a new shell
 claude                               # runs the REAL claude; watcher spins up underneath
 human-memory                         # status table of every running agent + staleness
-human-memory show                    # print the current dir's HUMAN_MEMORY.md
+human-memory show                    # print the current dir's resolved HUMAN_MEMORY.md
 ```
 
-`human-memory` reads each watcher's live status, so a stale whiteboard reaches your eyes
+`human-memory` reads each watcher's live status, so stale project memory reaches your eyes
 instead of dying in a logfile. Example:
 
 ```
@@ -225,7 +236,7 @@ AGENT   PID     STATE  BEHIND  AGE  DIR
 claude  48213   STALE  6       12s  ~/work/api
 codex   48230   fresh  0       3s   ~/work/web
 
-1 session(s) STALE — their HUMAN_MEMORY.md is behind the work.
+1 session(s) STALE - their human memory is behind the work.
 ```
 
 Optional — get nagged automatically at your shell prompt when the current dir falls
@@ -283,6 +294,9 @@ on install — re-installing never clobbers your edits). Every key is optional a
 back to a built-in default:
 
 ```toml
+[memory]
+storage = "central"           # default; use "project-file" to write in the repo
+
 [watcher]
 poll_seconds = 5              # how often the watcher scans the tree
 stale_edit_threshold = 8      # nag after this many edits since the whiteboard moved
@@ -322,7 +336,7 @@ How it works (see [`docs/llm-drafter-design.md`](docs/llm-drafter-design.md)):
   checkpoint captures remaining work.
 - **Safe writes.** It writes only its own session-scoped fenced block via the
   concurrency-safe updater (your text and other sessions' blocks are untouched), backs up
-  `HUMAN_MEMORY.md` → `.bak` first, and calls the real binary with
+  the project's `HUMAN_MEMORY.md` to `.bak` first, and calls the real binary with
   `AGENT_MEMORY_INTERNAL=1` so it never re-enters the shim.
 - **Honest.** The *why* behind a decision usually isn't in a diff, so the model is
   told to omit decisions it can't infer rather than invent them.

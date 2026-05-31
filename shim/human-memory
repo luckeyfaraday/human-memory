@@ -28,17 +28,27 @@ from pathlib import Path
 MEMORY_FILE = "HUMAN_MEMORY.md"
 
 
-def _load_whiteboard():
-    """Find whiteboard.py whether we're running from the repo (shim/) or
-    installed (bin/ → ../lib/)."""
+def _load_sibling(module_name: str):
+    """Find a sibling module whether running from repo (shim/) or installed
+    (bin/ -> ../lib/)."""
     here = Path(__file__).resolve().parent
-    for cand in (here / "whiteboard.py", here.parent / "lib" / "whiteboard.py"):
+    filename = f"{module_name}.py"
+    for cand in (here / filename, here.parent / "lib" / filename):
         if cand.exists():
-            spec = importlib.util.spec_from_file_location("whiteboard", cand)
+            spec = importlib.util.spec_from_file_location(module_name, cand)
             mod = importlib.util.module_from_spec(spec)
+            sys.modules[module_name] = mod
             spec.loader.exec_module(mod)
             return mod
     return None
+
+
+def _load_whiteboard():
+    return _load_sibling("whiteboard")
+
+
+def _load_memory_store():
+    return _load_sibling("memory_store")
 # A status file whose process is gone but that was never cleaned (e.g. the
 # watcher was hard-killed) is considered stale-on-disk after this long.
 ORPHAN_SECONDS = 90
@@ -138,17 +148,22 @@ def cmd_status(_args: list[str]) -> int:
         print(line)
     stale = sum(1 for s in sessions if s.get("stale"))
     if stale:
-        print(f"\n{stale} session(s) STALE — their HUMAN_MEMORY.md is behind the work.")
+        print(f"\n{stale} session(s) STALE - their human memory is behind the work.")
     return 0
 
 
 def cmd_show(args: list[str]) -> int:
+    ms = _load_memory_store()
     root = Path(args[0]) if args else Path.cwd()
-    p = root / MEMORY_FILE
+    if ms is None:
+        p = root / MEMORY_FILE
+    else:
+        storage, _note = ms.load_storage()
+        p = ms.resolve(root, storage).path
     try:
         sys.stdout.write(p.read_text())
     except OSError:
-        print(f"no {MEMORY_FILE} in {root}", file=sys.stderr)
+        print(f"no {MEMORY_FILE} for {root} at {p}", file=sys.stderr)
         return 1
     return 0
 
@@ -160,7 +175,7 @@ def cmd_nag(_args: list[str]) -> int:
              if s.get("cwd") == cwd and s.get("stale")]
     if stale:
         worst = max(stale, key=lambda s: s.get("unrecorded_edits", 0))
-        print(f"⚠ HUMAN_MEMORY.md is stale — {worst.get('unrecorded_edits', 0)} "
+        print(f"HUMAN_MEMORY.md is stale - {worst.get('unrecorded_edits', 0)} "
               f"edit(s) behind ({worst.get('agent', '?')}). "
               f"`human-memory show` to view.")
     return 0
@@ -175,9 +190,17 @@ def cmd_set(args: list[str]) -> int:
     if wb is None:
         print("human-memory: whiteboard.py not found", file=sys.stderr)
         return 1
+    ms = _load_memory_store()
     body = sys.stdin.read()
     try:
-        wb.update_file(Path.cwd() / MEMORY_FILE, args[0], body)
+        if ms is None:
+            p = Path.cwd() / MEMORY_FILE
+        else:
+            storage, _note = ms.load_storage()
+            location = ms.resolve(Path.cwd(), storage)
+            ms.ensure_location(location)
+            p = location.path
+        wb.update_file(p, args[0], body)
     except (ValueError, TimeoutError, OSError) as e:
         print(f"human-memory: {e}", file=sys.stderr)
         return 1

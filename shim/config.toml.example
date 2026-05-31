@@ -3,6 +3,12 @@
 # All keys are optional; anything omitted falls back to the built-in default
 # shown below. Read by shim/watcher.py.
 
+[memory]
+# Where project whiteboards are stored.
+# central:      default; writes under ~/.agent-memory/projects/<project-id>/
+# project-file: legacy/team mode; writes HUMAN_MEMORY.md in the working tree
+storage = "central"
+
 [watcher]
 # How often the watcher scans the working tree for changes, in seconds.
 poll_seconds = 5
