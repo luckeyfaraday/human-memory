@@ -34,12 +34,15 @@ from pathlib import Path
 # watcher still runs if the drafter pieces aren't installed.
 try:
     import drafter
+    import memory_store
     import whiteboard
 except ImportError:
     drafter = None
+    memory_store = None
     whiteboard = None
 
 MEMORY_FILE = "HUMAN_MEMORY.md"
+VALID_MEMORY_STORAGE = {"central", "project-file"}
 
 
 @dataclass(frozen=True)
@@ -67,10 +70,13 @@ class Config:
     draft_max_drafts_per_session: int = 2  # mid-session drafts; exit draft is separate
     draft_always_on_exit: bool = True
     draft_command: tuple[str, ...] | None = None
+    memory_storage: str = "central"
 
 
 def default_config_path() -> Path:
     """~/.agent-memory/config.toml, honoring AGENT_MEMORY_HOME like the shim does."""
+    if memory_store is not None:
+        return memory_store.default_config_path()
     home = os.environ.get("AGENT_MEMORY_HOME") or os.path.join(Path.home(), ".agent-memory")
     return Path(home) / "config.toml"
 
@@ -95,12 +101,20 @@ def load_config(path: Path | None = None) -> tuple[Config, str | None]:
 
     table = data.get("watcher", {})
     drafter = data.get("drafter", {})
+    memory = data.get("memory", {})
+    if not isinstance(table, dict) or not isinstance(drafter, dict) or not isinstance(memory, dict):
+        return defaults, f"config {path} has bad table values; using defaults"
     known = {"poll_seconds", "stale_edit_threshold", "stale_seconds_threshold",
              "ignore_dirs", "ignore_suffixes"}
     known_drafter = {"enabled", "model", "quiescence_seconds", "timeout_seconds",
                      "include_git_diff", "min_edit_ticks", "max_drafts_per_session",
                      "always_on_exit", "command"}
-    unknown = (set(table) - known) | {f"drafter.{k}" for k in set(drafter) - known_drafter}
+    known_memory = {"storage"}
+    unknown = (
+        (set(table) - known)
+        | {f"drafter.{k}" for k in set(drafter) - known_drafter}
+        | {f"memory.{k}" for k in set(memory) - known_memory}
+    )
     # Coercing user-supplied values can raise (e.g. int("not-an-int")); a bad
     # config must fall back to defaults, never crash the watcher.
     try:
@@ -136,7 +150,11 @@ def load_config(path: Path | None = None) -> tuple[Config, str | None]:
             if not isinstance(cmd, list) or not all(isinstance(p, str) for p in cmd):
                 raise ValueError("drafter.command must be an array of strings")
             kwargs["draft_command"] = tuple(cmd)
+        if "storage" in memory:
+            kwargs["memory_storage"] = str(memory["storage"])
         config = Config(**kwargs)
+        if config.memory_storage not in VALID_MEMORY_STORAGE:
+            raise ValueError("memory.storage must be central or project-file")
         if config.draft_quiescence_seconds < 0:
             raise ValueError("drafter.quiescence_seconds must be >= 0")
         if config.draft_min_edit_ticks < 1:
@@ -222,10 +240,9 @@ def scan_tree(root: Path, ignore_dirs: frozenset[str],
     return newest, count
 
 
-def memory_mtime(root: Path) -> float | None:
-    p = root / MEMORY_FILE
+def memory_mtime(path: Path) -> float | None:
     try:
-        return p.stat().st_mtime
+        return path.stat().st_mtime
     except OSError:
         return None
 
@@ -268,7 +285,8 @@ def session_owner(agent: str, pid: int) -> str:
 
 
 def bootstrap_missing_memory(root: Path, agent: str, owner: str,
-                             include_git_diff: bool) -> bool:
+                             include_git_diff: bool,
+                             memory_path: Path | None = None) -> bool:
     """Create a first whiteboard block without spending model tokens.
 
     A missing HUMAN_MEMORY.md should not leave a newly shimmed session stuck in
@@ -277,12 +295,13 @@ def bootstrap_missing_memory(root: Path, agent: str, owner: str,
     """
     if drafter is None or whiteboard is None:
         return False
-    mem_path = root / MEMORY_FILE
+    mem_path = memory_path or root / MEMORY_FILE
     if mem_path.exists():
         return False
     body = drafter.draft_block(
         root, agent, real_bin=None, model="", timeout=0,
         prev_block=None, include_git_diff=include_git_diff)
+    mem_path.parent.mkdir(parents=True, exist_ok=True)
     whiteboard.update_file(mem_path, owner, body)
     return True
 
@@ -343,9 +362,22 @@ def main() -> int:
                        f"owner={owner} cwd={root}")
     log_line(log_path, f"config: {cfg_note}")
 
-    mem_path = root / MEMORY_FILE
+    if memory_store is not None:
+        mem_location = memory_store.resolve(root, cfg.memory_storage)
+        mem_path = mem_location.path
+        try:
+            memory_store.ensure_location(mem_location)
+        except OSError as e:
+            log_line(log_path, f"memory metadata unavailable: {e!r}")
+        log_line(log_path, f"memory storage={mem_location.storage} "
+                           f"project={mem_location.project_id} path={mem_path}")
+    else:
+        mem_location = None
+        mem_path = root / MEMORY_FILE
+        log_line(log_path, "memory_store.py missing; falling back to project-file storage")
+
     if not mem_path.exists():
-        log_line(log_path, f"note: no {MEMORY_FILE} in {root} — agent has no whiteboard yet")
+        log_line(log_path, f"note: no {MEMORY_FILE} at {mem_path} — agent has no whiteboard yet")
 
     drafting = cfg.draft_enabled and drafter is not None and whiteboard is not None
     if cfg.draft_enabled and not drafting:
@@ -362,13 +394,15 @@ def main() -> int:
             model_note = f"{args.agent} default model"
         log_line(log_path, f"drafter ON: {kind}, {model_note}, "
                            f"quiescence={cfg.draft_quiescence_seconds}s")
-        if bootstrap_missing_memory(root, args.agent, owner, cfg.draft_include_git_diff):
-            log_line(log_path, f"bootstrapped {MEMORY_FILE} with deterministic {owner} block")
+        if bootstrap_missing_memory(
+                root, args.agent, owner, cfg.draft_include_git_diff, memory_path=mem_path):
+            log_line(log_path, f"bootstrapped {MEMORY_FILE} at {mem_path} "
+                               f"with deterministic {owner} block")
 
     # Baseline: edits that happen AFTER the last memory update are "unrecorded".
     last_seen_newest, _ = scan_tree(root, cfg.ignore_dirs, cfg.ignore_suffixes)
     unrecorded_edits = 0
-    last_mem_mtime = memory_mtime(root)
+    last_mem_mtime = memory_mtime(mem_path)
     last_nag = 0.0
     work_started_at: float | None = None
     last_edit_at: float | None = None
@@ -384,6 +418,9 @@ def main() -> int:
             "unrecorded_edits": unrecorded_edits,
             "work_age_s": int(work_age),
             "whiteboard_exists": mem_path.exists(),
+            "memory_path": str(mem_path),
+            "memory_storage": mem_location.storage if mem_location else "project-file",
+            "project_id": mem_location.project_id if mem_location else None,
         })
 
     def do_draft(label: str) -> None:
@@ -412,10 +449,10 @@ def main() -> int:
         unrecorded_edits = 0
         work_started_at = None
         last_drafted_newest = last_seen_newest
-        last_mem_mtime = memory_mtime(root)
+        last_mem_mtime = memory_mtime(mem_path)
         if label != "exit":
             draft_count += 1
-        log_line(log_path, f"drafted ({label}): updated {owner} block in {MEMORY_FILE}")
+        log_line(log_path, f"drafted ({label}): updated {owner} block in {mem_path}")
 
     publish(stale=False, work_age=0)
     try:
@@ -427,12 +464,12 @@ def main() -> int:
                 break
 
             newest, _count = scan_tree(root, cfg.ignore_dirs, cfg.ignore_suffixes)
-            mem_mtime = memory_mtime(root)
+            mem_mtime = memory_mtime(mem_path)
 
             # Did the whiteboard get updated (by a human/agent)? Reset accounting.
             if mem_mtime is not None and (last_mem_mtime is None or mem_mtime > last_mem_mtime):
                 if unrecorded_edits:
-                    log_line(log_path, f"fresh: {MEMORY_FILE} updated, clearing "
+                    log_line(log_path, f"fresh: {mem_path} updated, clearing "
                                        f"{unrecorded_edits} unrecorded edit(s)")
                 last_mem_mtime = mem_mtime
                 unrecorded_edits = 0
@@ -459,7 +496,7 @@ def main() -> int:
             if stale and (now() - last_nag) > cfg.stale_seconds_threshold:
                 last_nag = now()
                 log_line(log_path,
-                         f"STALE: {unrecorded_edits} edit(s) since {MEMORY_FILE} last moved "
+                         f"STALE: {unrecorded_edits} edit(s) since {mem_path} last moved "
                          f"({int(work_age)}s of unrecorded work). Whiteboard is behind.")
 
             # Quiescence draft: work happened, then settled — record it now. One

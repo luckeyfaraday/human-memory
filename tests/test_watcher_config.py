@@ -18,10 +18,31 @@ class WatcherConfig(unittest.TestCase):
     def test_drafter_throttle_defaults_are_conservative(self):
         cfg = watcher.Config()
 
+        self.assertEqual(cfg.memory_storage, "central")
         self.assertEqual(cfg.draft_quiescence_seconds, 120)
         self.assertEqual(cfg.draft_min_edit_ticks, 3)
         self.assertEqual(cfg.draft_max_drafts_per_session, 2)
         self.assertTrue(cfg.draft_always_on_exit)
+
+    def test_memory_storage_config_is_loaded(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "config.toml"
+            p.write_text('[memory]\nstorage = "project-file"\n')
+
+            cfg, note = watcher.load_config(p)
+
+        self.assertEqual(cfg.memory_storage, "project-file")
+        self.assertIn("memory_storage", note)
+
+    def test_bad_memory_storage_falls_back_to_defaults(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "config.toml"
+            p.write_text('[memory]\nstorage = "somewhere-else"\n')
+
+            cfg, note = watcher.load_config(p)
+
+        self.assertEqual(cfg.memory_storage, "central")
+        self.assertIn("bad values", note)
 
     def test_drafter_command_override_is_loaded(self):
         with tempfile.TemporaryDirectory() as d:

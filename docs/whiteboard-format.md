@@ -3,9 +3,11 @@
 **Status:** Adopted. Implemented by `shim/whiteboard.py` (`replace_agent_block`,
 `update_file`) and tested in `tests/test_whiteboard.py`.
 
-## Single agent (the default — unchanged)
+## Single agent
 
-One file at the working-tree root, five fixed sections in fixed order:
+One whiteboard file, five fixed sections in fixed order. By default the file
+lives in central storage under `~/.agent-memory/projects/<project-id>/`; with
+`[memory].storage = "project-file"` it lives at the working-tree root.
 
 ```markdown
 # HUMAN_MEMORY.md
@@ -18,7 +20,8 @@ One file at the working-tree root, five fixed sections in fixed order:
 ```
 
 A human (or a lone agent) editing by hand writes exactly this. No markers, no
-ceremony. This is byte-for-byte what the project shipped on day one.
+ceremony. The file format is byte-for-byte what the project shipped on day one;
+only the default storage location changed.
 
 ## Multiple sessions in the same working tree
 
