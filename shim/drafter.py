@@ -22,20 +22,60 @@ from __future__ import annotations
 
 import os
 import subprocess
+import tempfile
 from pathlib import Path
 
 MEMORY_FILE = "HUMAN_MEMORY.md"
 MAX_DIFF_CHARS = 12000  # bound the model input (and our token spend)
 
-# Headless invocation per agent. {bin}/{prompt}/{model} are filled in.
-# NOTE: only the claude form is verified. codex/opencode are best-effort guesses
-# — drafting is opt-in (config [drafter] enabled=false) precisely so nothing runs
-# these unvalidated until a user turns it on. Override via [drafter].command.
+# Headless invocation per agent. Placeholders: {bin} {prompt} {model} {outfile}.
+# `read` says where the agent's answer lands: "stdout" or "outfile" (a temp file
+# whose path is substituted for {outfile}). `use_model` is False where the shared
+# [drafter].model (a claude name like "haiku") doesn't apply — codex/opencode then
+# use their own configured default model.
+#
+# All three verified by real `Reply with PONG` runs (2026-05-31):
+#   claude   → clean stdout
+#   codex    → stdout is chrome; -o writes the clean answer to a file; also needs
+#              stdin=DEVNULL (see run_agent) or it blocks reading stdin
+#   opencode → its `run` default format prints to a TTY/file but emits NOTHING to a
+#              pipe (which is what we capture), so we use `--format json` and parse
+#              the assistant text from the JSONL events; -m needs provider/model so
+#              we omit it and let opencode use its configured default
 DEFAULT_COMMANDS = {
-    "claude": ["{bin}", "-p", "{prompt}", "--model", "{model}"],
-    "codex": ["{bin}", "exec", "{prompt}"],
-    "opencode": ["{bin}", "run", "{prompt}"],
+    "claude": {
+        "argv": ["{bin}", "-p", "{prompt}", "--model", "{model}"],
+        "read": "stdout", "use_model": True,
+    },
+    "codex": {
+        "argv": ["{bin}", "exec", "--sandbox", "read-only", "--skip-git-repo-check",
+                 "-o", "{outfile}", "{prompt}"],
+        "read": "outfile", "use_model": False,
+    },
+    "opencode": {
+        "argv": ["{bin}", "run", "--format", "json", "{prompt}"],
+        "read": "opencode_json", "use_model": False,
+    },
 }
+
+
+def parse_opencode_json(stdout: str) -> str | None:
+    """Concatenate the assistant text from opencode's `--format json` JSONL."""
+    import json
+    parts = []
+    for line in stdout.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            ev = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if ev.get("type") == "text":
+            text = ev.get("part", {}).get("text")
+            if text:
+                parts.append(text)
+    return "".join(parts).strip() or None
 
 
 def _git(root: Path, *args: str, timeout: float = 5) -> str | None:
@@ -152,20 +192,52 @@ def compose_prompt(prev_block: str | None, info: dict, skeleton: str) -> str:
 
 def run_agent(real_bin: str, agent: str, prompt: str, model: str,
               timeout: float, command: list[str] | None = None) -> str | None:
-    """Invoke the user's own agent headlessly; return stdout or None on any failure."""
-    template = command or DEFAULT_COMMANDS.get(agent)
-    if not template:
-        return None
-    argv = [part.format(bin=real_bin, prompt=prompt, model=model) for part in template]
+    """Invoke the user's own agent headlessly; return its answer or None on failure.
+
+    `command`, if given, is a raw argv list read from stdout (used by tests and the
+    [drafter].command override). Otherwise the per-agent spec in DEFAULT_COMMANDS
+    decides the argv, whether the model flag applies, and whether the answer comes
+    from stdout or a temp output file (codex).
+    """
+    if command is not None:
+        spec = {"argv": command, "read": "stdout", "use_model": True}
+    else:
+        spec = DEFAULT_COMMANDS.get(agent)
+        if not spec:
+            return None
+
+    outfile = None
+    fields = {"bin": real_bin, "prompt": prompt, "model": model}
+    if spec["read"] == "outfile":
+        fd, outfile = tempfile.mkstemp(prefix="hm-draft-", suffix=".md")
+        os.close(fd)
+        fields["outfile"] = outfile
+
+    argv = [part.format(**fields) for part in spec["argv"]]
     env = {**os.environ, "AGENT_MEMORY_INTERNAL": "1"}  # N1: never re-spawn a watcher
     try:
+        # stdin=DEVNULL is REQUIRED: `codex exec` reads stdin for extra context
+        # and blocks until EOF when stdin isn't a TTY — without this it hangs
+        # until the timeout. Harmless for the others.
         out = subprocess.run(argv, capture_output=True, text=True,
-                             timeout=timeout, env=env)
+                             timeout=timeout, env=env, stdin=subprocess.DEVNULL)
+        if out.returncode != 0:
+            return None
+        if spec["read"] == "outfile":
+            answer = Path(outfile).read_text().strip()
+        elif spec["read"] == "opencode_json":
+            answer = parse_opencode_json(out.stdout) or ""
+        else:
+            answer = out.stdout.strip()
+        return answer or None
     except (OSError, subprocess.TimeoutExpired):
         return None
-    if out.returncode != 0 or not out.stdout.strip():
-        return None
-    return out.stdout.strip()
+    finally:
+        if outfile:
+            try:
+                os.unlink(outfile)
+            except OSError:
+                pass
 
 
 def draft_block(root: Path, agent: str, *, real_bin: str | None, model: str,

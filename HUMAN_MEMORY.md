@@ -1,10 +1,10 @@
 # HUMAN_MEMORY.md
 
 ## Current State
-On branch `feat/draft-update` (off main; #3/#4/#5 all merged). Built the marquee
-feature: `draft_update()` — the watcher now AUTHORS HUMAN_MEMORY.md, not just
-warns. Hybrid (deterministic skeleton + optional cheap-model polish), quiescence-
-triggered, opt-in. Implemented + tested (19 tests) + e2e verified. Ready to PR.
+On branch `feat/draft-update` (PR #6, off main). Built `draft_update()` — the
+watcher now AUTHORS HUMAN_MEMORY.md (hybrid, quiescence-triggered, opt-in). THEN
+verified all three headless agent invocations against the REAL binaries and fixed
+the two that were wrong. 22 tests pass. Pushing the fixes to PR #6.
 
 ## What Just Happened
 - **draft_update()** (this branch): `shim/drafter.py` + a drafting loop in
@@ -38,11 +38,12 @@ triggered, opt-in. Implemented + tested (19 tests) + e2e verified. Ready to PR.
   llm-drafter design doc (PR #2, main).
 
 ## Pending
-- [ ] Open PR for feat/draft-update (off main)
-- [x] draft_update() — BUILT + tested + e2e verified. Opt-in.
-- [ ] VALIDATE codex/opencode headless commands — only `claude -p` is verified;
-      the other two are best-effort guesses in DEFAULT_COMMANDS (drafter.py).
-      Needs a real run of each (spends tokens) before flipping defaults.
+- [x] draft_update() — BUILT + tested + e2e verified. Opt-in. (PR #6)
+- [x] VALIDATE codex/opencode headless commands — DONE, real runs 2026-05-31.
+      Both guesses were WRONG; fixed: codex needs `-o <file>` (stdout is chrome)
+      + stdin=DEVNULL (else hangs); opencode needs `--format json` (emits NOTHING
+      to a pipe otherwise) + parse JSONL; shared model only applies to claude.
+      All three now return clean answers through run_agent.
 - [ ] Optional: `.human-memory-promote` / `-hold` manual overrides (deferred in doc)
 - [ ] Polling → native inotify / ReadDirectoryChangesW
 - [ ] Resolution override / multi-agent config wiring

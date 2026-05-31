@@ -102,6 +102,40 @@ class RunAgent(unittest.TestCase):
         b = _fake_bin("sleep 5")
         self.assertIsNone(dr.run_agent(b, "claude", "p", "haiku", 0.3, command=[b]))
 
+    def test_outfile_read_mode(self):
+        # codex writes its answer to a file (-o), not stdout. Simulate that agent's
+        # spec: a fake bin that writes its last arg's target and prints chrome to
+        # stdout, proving we read the FILE and ignore stdout.
+        b = _fake_bin('echo "noisy chrome on stdout"; printf "FILE ANSWER" > "$2"')
+        orig = dr.DEFAULT_COMMANDS.get("faux")
+        dr.DEFAULT_COMMANDS["faux"] = {
+            "argv": [b, "-o", "{outfile}", "{prompt}"], "read": "outfile", "use_model": False}
+        try:
+            out = dr.run_agent(b, "faux", "summarize", "haiku", 5)
+        finally:
+            dr.DEFAULT_COMMANDS.pop("faux", None)
+            if orig is not None:
+                dr.DEFAULT_COMMANDS["faux"] = orig
+        self.assertEqual(out, "FILE ANSWER")  # file content, not the stdout chrome
+
+    def test_parse_opencode_json(self):
+        jsonl = (
+            '{"type":"step_start","part":{"type":"step-start"}}\n'
+            '{"type":"text","part":{"type":"text","text":"Hello "}}\n'
+            '{"type":"text","part":{"type":"text","text":"world"}}\n'
+            'not json — ignored\n'
+        )
+        self.assertEqual(dr.parse_opencode_json(jsonl), "Hello world")
+        self.assertIsNone(dr.parse_opencode_json(""))
+        self.assertIsNone(dr.parse_opencode_json('{"type":"step_start"}\n'))
+
+    def test_real_specs_have_required_keys(self):
+        for agent, spec in dr.DEFAULT_COMMANDS.items():
+            self.assertIn(spec["read"], ("stdout", "outfile", "opencode_json"), agent)
+            self.assertIn("{prompt}", spec["argv"], agent)
+            if spec["read"] == "outfile":
+                self.assertIn("{outfile}", spec["argv"], agent)
+
 
 class DraftBlock(unittest.TestCase):
     def test_no_real_bin_falls_back_to_skeleton(self):

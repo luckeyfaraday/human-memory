@@ -322,16 +322,21 @@ How it works (see [`docs/llm-drafter-design.md`](docs/llm-drafter-design.md)):
 - **Honest.** The *why* behind a decision usually isn't in a diff, so the model is
   told to omit decisions it can't infer rather than invent them.
 
-> Only the `claude -p --model …` invocation is verified; `codex`/`opencode` headless
-> commands are best-effort defaults (override with `[drafter] command`). This is part
-> of why drafting ships opt-in.
+> All three headless invocations are verified against the real binaries. They differ
+> in ways the defaults handle for you: `claude -p --model <model>` reads stdout;
+> `codex exec --sandbox read-only -o <file> …` reads a temp file (its stdout is
+> status chrome) and needs stdin closed; `opencode run …` reads stdout. The shared
+> `model` only applies to `claude` — `codex`/`opencode` use their own configured
+> default model. Override any of it with `[drafter] command`.
 
 ### Known limitations (MVP)
 
 - Watcher polls instead of using `inotify` — fine for a prototype, will burn a little
   idle CPU. Native inotify is the planned upgrade.
-- Auto-drafting is opt-in and verified end-to-end for `claude`; the `codex`/`opencode`
-  headless commands are unvalidated guesses.
+- Auto-drafting is opt-in. All three agents' headless commands are verified, but the
+  *quality* of LLM-polished drafts is only as good as the model and the diff (the
+  "why" behind decisions isn't in a diff — the prompt tells the model to omit rather
+  than invent it).
 - Resolution override / multi-agent config not yet wired.
 
 ---

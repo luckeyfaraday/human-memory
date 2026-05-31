@@ -42,12 +42,21 @@ feature, not a prompt change.
 These are settled and don't need re-litigating (but are recorded for the cold reader):
 
 - **D1 — Backend = headless agent (default).** The watcher shells out to the *same*
-  agent the user already launched (`claude -p`, `codex exec`, `opencode run` — exact
-  flags TBD per agent), reusing their existing auth. Chosen over a direct API or a
-  local model because it requires **zero new setup**, adds **no dependency**, and
-  keeps the **privacy boundary unchanged** (a `codex` user's diffs shouldn't suddenly
-  route to Anthropic). See the comparison table in the appendix. The backend lives
-  behind a small `Summarizer` interface so `api` / `local` can be swapped in later.
+  agent the user already launched, reusing their existing auth. Chosen over a direct
+  API or a local model because it requires **zero new setup**, adds **no dependency**,
+  and keeps the **privacy boundary unchanged** (a `codex` user's diffs shouldn't
+  suddenly route to Anthropic). See the comparison table in the appendix.
+  **Per-agent invocations (all verified by real runs, 2026-05-31; see
+  `drafter.DEFAULT_COMMANDS`):**
+  - `claude` — `claude -p <prompt> --model <model>`; answer on **stdout**. The shared
+    `[drafter].model` (default `haiku`) applies here only.
+  - `codex` — `codex exec --sandbox read-only --skip-git-repo-check -o <file> <prompt>`;
+    answer read from the **-o file** (stdout is status chrome). Requires
+    `stdin=DEVNULL` or it blocks reading stdin. Uses codex's own default model.
+  - `opencode` — `opencode run --format json <prompt>`; answer parsed from the
+    **JSONL** `type:"text"` events. Its non-JSON format emits nothing to a *pipe*
+    (only a TTY/file), so JSON is required when capturing. Uses opencode's default model.
+  Each can be overridden wholesale via `[drafter].command`.
 - **D2 — Cadence — REOPENED then revised to quiescence (not continuous).** The
   original "draft on every staleness event" was incoherent with Q1=A: promotion is
   a free file-copy, so the cost is all in the *drafting* — continuous would pay for
