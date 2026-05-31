@@ -136,6 +136,12 @@ class RunAgent(unittest.TestCase):
             if spec["read"] == "outfile":
                 self.assertIn("{outfile}", spec["argv"], agent)
 
+    def test_codex_uses_codex_drafter_model(self):
+        spec = dr.DEFAULT_COMMANDS["codex"]
+        self.assertEqual(spec["agent_model"], "gpt-5.4-mini")
+        self.assertIn("--model", spec["argv"])
+        self.assertIn("{agent_model}", spec["argv"])
+
 
 class DraftBlock(unittest.TestCase):
     def test_no_real_bin_falls_back_to_skeleton(self):

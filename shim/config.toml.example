@@ -29,13 +29,24 @@ ignore_suffixes = [".pyc", ".log", ".swp", ".tmp"]
 # spends your tokens and shares your rate limit with the session you're running.
 enabled = false
 
-# Cheap/fast model for the summary — the task is "summarize a diff into 5
-# sections", which doesn't need a frontier model.
+# Claude-only model name. Codex uses its built-in drafter model
+# (gpt-5.4-mini); OpenCode uses its configured default model.
 model = "haiku"
 
-# Draft once work has been idle this long (a settled checkpoint), and on exit.
+# Draft once work has been idle this long (a settled checkpoint).
 # Not on every edit — that would pay per draft and discard most of them.
-quiescence_seconds = 25
+quiescence_seconds = 120
+
+# Avoid paying for LLM drafts after tiny pauses. The exit draft still captures
+# final state even when fewer edits happened.
+min_edit_ticks = 3
+
+# Cap mid-session drafts. The final exit draft is separate and still runs when
+# always_on_exit = true.
+max_drafts_per_session = 2
+
+# Capture any unrecorded work when the agent exits.
+always_on_exit = true
 
 # Hard cap on the drafter subprocess; it's killed and we keep the skeleton.
 timeout_seconds = 60

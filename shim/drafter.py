@@ -30,14 +30,15 @@ MAX_DIFF_CHARS = 12000  # bound the model input (and our token spend)
 
 # Headless invocation per agent. Placeholders: {bin} {prompt} {model} {outfile}.
 # `read` says where the agent's answer lands: "stdout" or "outfile" (a temp file
-# whose path is substituted for {outfile}). `use_model` is False where the shared
-# [drafter].model (a claude name like "haiku") doesn't apply — codex/opencode then
-# use their own configured default model.
+# whose path is substituted for {outfile}). `{model}` is the shared
+# [drafter].model (a Claude name like "haiku"); `{agent_model}` is an agent-
+# specific drafter model where the shared value does not apply.
 #
 # All three verified by real `Reply with PONG` runs (2026-05-31):
 #   claude   → clean stdout
 #   codex    → stdout is chrome; -o writes the clean answer to a file; also needs
-#              stdin=DEVNULL (see run_agent) or it blocks reading stdin
+#              stdin=DEVNULL (see run_agent) or it blocks reading stdin; uses
+#              gpt-5.4-mini as the cheap drafter model
 #   opencode → its `run` default format prints to a TTY/file but emits NOTHING to a
 #              pipe (which is what we capture), so we use `--format json` and parse
 #              the assistant text from the JSONL events; -m needs provider/model so
@@ -49,8 +50,8 @@ DEFAULT_COMMANDS = {
     },
     "codex": {
         "argv": ["{bin}", "exec", "--sandbox", "read-only", "--skip-git-repo-check",
-                 "-o", "{outfile}", "{prompt}"],
-        "read": "outfile", "use_model": False,
+                 "--model", "{agent_model}", "-o", "{outfile}", "{prompt}"],
+        "read": "outfile", "use_model": False, "agent_model": "gpt-5.4-mini",
     },
     "opencode": {
         "argv": ["{bin}", "run", "--format", "json", "{prompt}"],
@@ -207,7 +208,12 @@ def run_agent(real_bin: str, agent: str, prompt: str, model: str,
             return None
 
     outfile = None
-    fields = {"bin": real_bin, "prompt": prompt, "model": model}
+    fields = {
+        "bin": real_bin,
+        "prompt": prompt,
+        "model": model,
+        "agent_model": str(spec.get("agent_model") or model),
+    }
     if spec["read"] == "outfile":
         fd, outfile = tempfile.mkstemp(prefix="hm-draft-", suffix=".md")
         os.close(fd)

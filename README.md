@@ -43,9 +43,10 @@ Next: make the test's clock mock advance past `exp`.
 Five sections, fixed order. The point is **scannability**: same shape every time, so
 your eye knows where to land.
 
-When **multiple agents share one working tree**, each one owns a fenced block and only
-rewrites its own — so they can't clobber each other (live *or* over git), while any
-hand-written text stays untouched and a lone agent's file stays exactly as above. Spec:
+When **multiple agent sessions share one working tree**, each session owns a fenced
+block (`codex-<pid>`, `claude-<pid>`, etc.) and only rewrites its own — so they
+can't clobber each other (live *or* over git), while any hand-written text stays
+untouched and a lone agent's file stays exactly as above. Spec:
 [`docs/whiteboard-format.md`](docs/whiteboard-format.md).
 
 ---
@@ -302,8 +303,11 @@ already-authed agent, which spends your tokens and shares your rate limit:
 ```toml
 [drafter]
 enabled = true            # default false
-model = "haiku"           # cheap model — the task is "summarize a diff into 5 sections"
-quiescence_seconds = 25   # draft when work settles (and on exit), not on every edit
+model = "haiku"           # Claude-only; Codex uses gpt-5.4-mini, OpenCode uses its default
+quiescence_seconds = 120  # draft when work settles, not on every edit
+min_edit_ticks = 3        # skip LLM drafts for tiny pauses
+max_drafts_per_session = 2
+always_on_exit = true     # final checkpoint is separate from the mid-session cap
 timeout_seconds = 60
 include_git_diff = true
 ```
@@ -313,10 +317,11 @@ How it works (see [`docs/llm-drafter-design.md`](docs/llm-drafter-design.md)):
 - **Hybrid.** A deterministic skeleton (`git status`/diff, newest file, TODO/FIXME)
   needs no model and is the floor; the model only *polishes* it into the five
   sections. If the model is slow, absent, or fails, you still get the skeleton.
-- **Quiescence-triggered.** One draft per settled work-chunk (and a final one on
-  exit) — not per edit — so it doesn't churn tokens or your rate limit.
-- **Safe writes.** It writes only its own fenced block via the concurrency-safe
-  updater (your text and other agents' blocks are untouched), backs up
+- **Quiescence-triggered and capped.** Drafts run after settled work chunks, but
+  only after enough edits and only up to `max_drafts_per_session`; a final exit
+  checkpoint captures remaining work.
+- **Safe writes.** It writes only its own session-scoped fenced block via the
+  concurrency-safe updater (your text and other sessions' blocks are untouched), backs up
   `HUMAN_MEMORY.md` → `.bak` first, and calls the real binary with
   `AGENT_MEMORY_INTERNAL=1` so it never re-enters the shim.
 - **Honest.** The *why* behind a decision usually isn't in a diff, so the model is
@@ -325,9 +330,9 @@ How it works (see [`docs/llm-drafter-design.md`](docs/llm-drafter-design.md)):
 > All three headless invocations are verified against the real binaries. They differ
 > in ways the defaults handle for you: `claude -p --model <model>` reads stdout;
 > `codex exec --sandbox read-only -o <file> …` reads a temp file (its stdout is
-> status chrome) and needs stdin closed; `opencode run …` reads stdout. The shared
-> `model` only applies to `claude` — `codex`/`opencode` use their own configured
-> default model. Override any of it with `[drafter] command`.
+> status chrome) and needs stdin closed; it uses `gpt-5.4-mini` for drafting.
+> `opencode run …` reads stdout and uses its configured default model. The shared
+> `model` only applies to `claude`. Override any of it with `[drafter] command`.
 
 ### Known limitations (MVP)
 

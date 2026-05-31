@@ -20,10 +20,10 @@ One file at the working-tree root, five fixed sections in fixed order:
 A human (or a lone agent) editing by hand writes exactly this. No markers, no
 ceremony. This is byte-for-byte what the project shipped on day one.
 
-## Multiple agents in the same working tree
+## Multiple sessions in the same working tree
 
-This happens (sometimes you point two agents at one tree). The rule that keeps
-them from clobbering each other:
+This happens (sometimes you point several agents, or several sessions of the
+same agent, at one tree). The rule that keeps them from clobbering each other:
 
 > **Unfenced content is sacred. Each automated writer owns exactly one fenced
 > block and only ever rewrites its own.**
@@ -35,20 +35,20 @@ A block is delimited by HTML comments (invisible when rendered):
 
 any unfenced text here is the human's — agents never touch it
 
-<!-- hm:agent=claude -->
+<!-- hm:session=claude-10101 -->
 ## Current State
-…claude's five sections…
-<!-- /hm:agent=claude -->
+…claude session 10101's five sections…
+<!-- /hm:session=claude-10101 -->
 
-<!-- hm:agent=codex -->
+<!-- hm:session=codex-10202 -->
 ## Current State
-…codex's five sections…
-<!-- /hm:agent=codex -->
+…codex session 10202's five sections…
+<!-- /hm:session=codex-10202 -->
 ```
 
 ### Why this shape
 
-- **No live clobber.** Two agents writing at once touch disjoint byte ranges. The
+- **No live clobber.** Two sessions writing at once touch disjoint byte ranges. The
   writer takes a short lock and does an atomic read-modify-write of *only* its own
   block (`update_file`), so simultaneous updates can't lose each other.
 - **No git conflict.** Distinct blocks are distinct hunks, so parallel branches
@@ -57,7 +57,8 @@ any unfenced text here is the human's — agents never touch it
   writers.
 - **No ownership ambiguity.** Because unfenced text is never auto-edited, there's
   no question of "who owns the existing plain content" when a second agent appears.
-  The human's notes and each agent's block coexist.
+  The human's notes and each session's block coexist. Three Codex sessions get
+  three separate blocks (`codex-<pid>`), not one last-writer-wins Codex block.
 - **Degrades to nothing.** One agent that never fences = a plain file = the
   single-agent format above. The machinery only appears when a second automated
   writer does.
@@ -73,15 +74,15 @@ partitioning is for *write safety*; the swarm overview lives in the viewer.
 
 ```python
 from whiteboard import update_file   # ships to ~/.agent-memory/lib/
-update_file(path, "claude", body)    # set claude's block (locked, atomic)
-update_file(path, "claude", None)    # remove it
+update_file(path, "claude-10101", body)    # set one session block (locked, atomic)
+update_file(path, "claude-10101", None)    # remove it
 ```
 
 or from the shell, concurrency-safe:
 
 ```bash
 echo "## Current State
-…" | human-memory set claude
+…" | human-memory set claude-10101
 ```
 
 This is the primitive a future watcher-driven `draft_update()` will call (see

@@ -10,10 +10,10 @@ reaches *you* instead of dying in a logfile.
     human-memory show [dir] # print the HUMAN_MEMORY.md for dir (default: cwd)
     human-memory nag        # one line iff THIS dir has a stale session (for
                             #   a shell prompt hook); silent otherwise
-    human-memory set AGENT  # set AGENT's fenced block in the cwd whiteboard from
+    human-memory set OWNER  # set OWNER's fenced block in the cwd whiteboard from
                             #   stdin, concurrency-safe (mostly for scripts/tests)
 
-stdlib only. Read-only except `set`, which only ever touches its own agent block.
+stdlib only. Read-only except `set`, which only ever touches one owner block.
 """
 
 from __future__ import annotations
@@ -167,9 +167,9 @@ def cmd_nag(_args: list[str]) -> int:
 
 
 def cmd_set(args: list[str]) -> int:
-    """Set AGENT's block in the cwd whiteboard from stdin (concurrency-safe)."""
+    """Set OWNER's block in the cwd whiteboard from stdin (concurrency-safe)."""
     if not args:
-        print("usage: human-memory set AGENT  (body on stdin)", file=sys.stderr)
+        print("usage: human-memory set OWNER  (body on stdin)", file=sys.stderr)
         return 2
     wb = _load_whiteboard()
     if wb is None:
