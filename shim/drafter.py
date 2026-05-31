@@ -1,0 +1,185 @@
+#!/usr/bin/env python3
+"""drafter.py — author a HUMAN_MEMORY.md block from observed changes.
+
+Hybrid by design (see docs/llm-drafter-design.md):
+
+  * The deterministic skeleton (git diff / changed files / TODOs) needs no model,
+    no tokens, no network — it always works and is the floor.
+  * If a model is available, it polishes the skeleton into the five sections.
+    The model runs as the user's OWN already-authed agent in headless mode, at a
+    cheap model, called via the real binary with AGENT_MEMORY_INTERNAL=1 so it
+    never re-enters the shim (N1). Any failure/timeout falls back to the skeleton.
+
+Honesty constraint baked into the prompt: the *why* behind a decision usually
+isn't in a diff, so the model is told to omit decisions it can't infer with
+confidence rather than invent them.
+
+This is the body of `draft_update()`. Best-effort throughout: it must never hang
+or break the agent session. stdlib + git only.
+"""
+
+from __future__ import annotations
+
+import os
+import subprocess
+from pathlib import Path
+
+MEMORY_FILE = "HUMAN_MEMORY.md"
+MAX_DIFF_CHARS = 12000  # bound the model input (and our token spend)
+
+# Headless invocation per agent. {bin}/{prompt}/{model} are filled in.
+# NOTE: only the claude form is verified. codex/opencode are best-effort guesses
+# — drafting is opt-in (config [drafter] enabled=false) precisely so nothing runs
+# these unvalidated until a user turns it on. Override via [drafter].command.
+DEFAULT_COMMANDS = {
+    "claude": ["{bin}", "-p", "{prompt}", "--model", "{model}"],
+    "codex": ["{bin}", "exec", "{prompt}"],
+    "opencode": ["{bin}", "run", "{prompt}"],
+}
+
+
+def _git(root: Path, *args: str, timeout: float = 5) -> str | None:
+    try:
+        out = subprocess.run(["git", "-C", str(root), *args],
+                             capture_output=True, text=True, timeout=timeout)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return out.stdout if out.returncode == 0 else None
+
+
+def is_git_repo(root: Path) -> bool:
+    return _git(root, "rev-parse", "--is-inside-work-tree") is not None
+
+
+def collect_changes(root: Path, include_git_diff: bool = True) -> dict:
+    """Gather the deterministic facts a draft is built from.
+
+    Returns {changed_files, newest_file, todos, diff}. Prefers git; falls back to
+    an mtime walk when not a repo.
+    """
+    info: dict = {"changed_files": [], "newest_file": None, "todos": [], "diff": ""}
+
+    if include_git_diff and is_git_repo(root):
+        # `git status --porcelain` so we also catch NEW (untracked) files — a
+        # coding agent creating files is exactly the common case, and `git diff
+        # HEAD` alone would miss them.
+        status = _git(root, "status", "--porcelain") or ""
+        files = []
+        for line in status.splitlines():
+            if not line.strip():
+                continue
+            path = line[3:]
+            if " -> " in path:        # rename: take the new name
+                path = path.split(" -> ", 1)[1]
+            files.append(path.strip().strip('"'))
+        info["changed_files"] = files
+        diff = _git(root, "diff", "HEAD") or ""  # tracked changes (untracked listed above)
+        info["diff"] = diff[:MAX_DIFF_CHARS]
+    else:
+        # No git: newest few files by mtime, excluding the whiteboard itself.
+        files = []
+        for dp, dirs, fns in os.walk(root):
+            dirs[:] = [d for d in dirs if not d.startswith(".") and d != "node_modules"]
+            for fn in fns:
+                if fn == MEMORY_FILE:
+                    continue
+                p = Path(dp) / fn
+                try:
+                    files.append((p.stat().st_mtime, p))
+                except OSError:
+                    pass
+        files.sort(reverse=True)
+        info["changed_files"] = [str(p.relative_to(root)) for _, p in files[:10]]
+
+    # Newest changed file (for "Where I Left Off").
+    newest_mtime = -1.0
+    for rel in info["changed_files"]:
+        p = root / rel
+        try:
+            m = p.stat().st_mtime
+        except OSError:
+            continue
+        if m > newest_mtime:
+            newest_mtime, info["newest_file"] = m, rel
+
+    # TODO/FIXME in changed files (cheap pending-work signal).
+    for rel in info["changed_files"][:20]:
+        p = root / rel
+        try:
+            for i, line in enumerate(p.read_text(errors="ignore").splitlines(), 1):
+                if "TODO" in line or "FIXME" in line:
+                    info["todos"].append(f"{rel}:{i}: {line.strip()[:80]}")
+                    if len(info["todos"]) >= 10:
+                        break
+        except OSError:
+            pass
+    return info
+
+
+def build_skeleton(info: dict) -> str:
+    """A useful five-section block with zero model calls."""
+    files = info["changed_files"]
+    what = "\n".join(f"- changed `{f}`" for f in files[:8]) or "- (no tracked changes detected)"
+    pending = "\n".join(f"- [ ] {t}" for t in info["todos"]) or "- _(no TODO/FIXME markers found in changed files)_"
+    left = f"`{info['newest_file']}` — most recently modified." if info["newest_file"] else "_(unknown)_"
+    return (
+        "## Current State\n_(auto-draft: model unavailable — skeleton only)_\n\n"
+        "## What Just Happened\n" + what + "\n\n"
+        "## Pending\n" + pending + "\n\n"
+        "## Key Decisions\n_(not inferable from changes alone)_\n\n"
+        "## Where I Left Off\n" + left + "\n"
+    )
+
+
+def compose_prompt(prev_block: str | None, info: dict, skeleton: str) -> str:
+    diff = info["diff"] or "(no diff available)"
+    prev = prev_block.strip() if prev_block else "(none yet)"
+    return (
+        "You maintain HUMAN_MEMORY.md, a running whiteboard that lets a human "
+        "reload context on this work in ~10 seconds. Update it from the recent "
+        "changes below.\n\n"
+        "Output ONLY markdown with exactly these five sections, in order:\n"
+        "## Current State\n## What Just Happened\n## Pending\n## Key Decisions\n"
+        "## Where I Left Off\n\n"
+        "Be terse and concrete. Prefer file/line references. IMPORTANT: for "
+        "'Key Decisions', include a decision ONLY if the reason is clearly "
+        "evident from the changes — do NOT invent rationales; omit if unsure.\n\n"
+        f"--- Previous whiteboard block ---\n{prev}\n\n"
+        f"--- Deterministic skeleton (facts) ---\n{skeleton}\n\n"
+        f"--- git diff (truncated) ---\n{diff}\n"
+    )
+
+
+def run_agent(real_bin: str, agent: str, prompt: str, model: str,
+              timeout: float, command: list[str] | None = None) -> str | None:
+    """Invoke the user's own agent headlessly; return stdout or None on any failure."""
+    template = command or DEFAULT_COMMANDS.get(agent)
+    if not template:
+        return None
+    argv = [part.format(bin=real_bin, prompt=prompt, model=model) for part in template]
+    env = {**os.environ, "AGENT_MEMORY_INTERNAL": "1"}  # N1: never re-spawn a watcher
+    try:
+        out = subprocess.run(argv, capture_output=True, text=True,
+                             timeout=timeout, env=env)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if out.returncode != 0 or not out.stdout.strip():
+        return None
+    return out.stdout.strip()
+
+
+def draft_block(root: Path, agent: str, *, real_bin: str | None, model: str,
+                timeout: float, prev_block: str | None, include_git_diff: bool,
+                command: list[str] | None = None) -> str:
+    """Produce the markdown body for this agent's whiteboard block.
+
+    Always returns something usable: the model's polished version if available,
+    otherwise the deterministic skeleton.
+    """
+    info = collect_changes(root, include_git_diff=include_git_diff)
+    skeleton = build_skeleton(info)
+    if not real_bin:
+        return skeleton
+    prompt = compose_prompt(prev_block, info, skeleton)
+    polished = run_agent(real_bin, agent, prompt, model, timeout, command=command)
+    return polished or skeleton

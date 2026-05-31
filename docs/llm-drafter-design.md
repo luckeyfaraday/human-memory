@@ -1,7 +1,10 @@
 # LLM-backed `draft_update()` — design decisions to resolve
 
-**Status:** Open — needs decisions before implementation.
-**Last updated:** 2026-05-30
+**Status:** IMPLEMENTED (opt-in). Decisions resolved below; built in
+`shim/drafter.py` + the drafting loop in `shim/watcher.py`; tested in
+`tests/test_drafter.py`. Off by default (`[drafter] enabled = false`) because it
+spends the user's tokens in the background.
+**Last updated:** 2026-05-31
 **Owners:** @luckeyfaraday (+ whoever picks this up next)
 
 This doc parks an in-progress design discussion so it survives a machine switch or
@@ -45,10 +48,13 @@ These are settled and don't need re-litigating (but are recorded for the cold re
   keeps the **privacy boundary unchanged** (a `codex` user's diffs shouldn't suddenly
   route to Anthropic). See the comparison table in the appendix. The backend lives
   behind a small `Summarizer` interface so `api` / `local` can be swapped in later.
-- **D2 — Cadence = continuous, not exit-only.** The whiteboard updates live *while*
-  the agent works (drafting on each staleness event), so you can watch context
-  accumulate in real time. A final draft on exit is fine too, but continuous is the
-  on-vision behavior; exit-only is not enough.
+- **D2 — Cadence — REOPENED then revised to quiescence (not continuous).** The
+  original "draft on every staleness event" was incoherent with Q1=A: promotion is
+  a free file-copy, so the cost is all in the *drafting* — continuous would pay for
+  N drafts per work-chunk and then discard all but the one that lands at the next
+  settle point. So we draft *at* quiescence + on exit instead: one LLM call per
+  settled chunk, same visible result (checkpoints), a fraction of the spend. (True
+  continuous would only make sense paired with Q1=B live-write, which we rejected.)
 - **D3 — Drafts go to a sidecar, not straight onto the live file.** A wrong
   auto-generated whiteboard is worse than a stale one ("you trust it"). So drafting
   writes to a sidecar (e.g. `HUMAN_MEMORY.md.draft`) and something promotes it to the
@@ -83,7 +89,14 @@ Either way we need: a backup of the prior good version, and a manual override
 (e.g. `touch .human-memory-promote` to force now, `.human-memory-hold` to freeze the
 live file while reading).
 
-**DECISION: TBD**
+**DECISION: A (quiescence), simplified.** We draft *at* quiescence (work idle
+`quiescence_seconds`, default 25) and on agent exit. Because the per-agent block
+model (`whiteboard.update_file`, see [whiteboard-format.md](whiteboard-format.md))
+means a writer only ever touches its own fenced block — never the human's text or
+another agent's — there's no need for a separate sidecar file: gating on *when* we
+write (settled checkpoints) gives the trust property the sidecar was for. We back
+up `HUMAN_MEMORY.md` → `HUMAN_MEMORY.md.bak` before each write (one revert away).
+The `.human-memory-promote`/`-hold` overrides are not yet built.
 
 ---
 
@@ -101,7 +114,11 @@ running** — it can throttle the work they actually care about.
   with the foreground session for budget and rate limits. Likely painful under
   "continuous."
 
-**DECISION: TBD**
+**DECISION: A (cheap model).** `[drafter] model` defaults to `haiku`. The real
+risk is rate-limit *contention* with the foreground session, not just dollars, so
+cheap-and-infrequent wins. Plus the **hybrid** floor: the deterministic skeleton
+(`git status`/diff, newest file, TODOs) needs no model at all, so the LLM only
+polishes — and if it's slow/absent/fails, we ship the skeleton.
 
 ---
 

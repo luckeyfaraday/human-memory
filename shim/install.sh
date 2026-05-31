@@ -22,6 +22,7 @@ mkdir -p "$bin_dir" "$lib_dir" "$log_dir"
 install -m 0755 "$src_dir/agent-shim" "$bin_dir/agent-shim"
 install -m 0755 "$src_dir/watcher.py" "$lib_dir/watcher.py"
 install -m 0644 "$src_dir/whiteboard.py" "$lib_dir/whiteboard.py"
+install -m 0644 "$src_dir/drafter.py" "$lib_dir/drafter.py"
 # The viewer — a real command (not a shimmed agent name) for seeing staleness.
 install -m 0755 "$src_dir/human-memory" "$bin_dir/human-memory"
 

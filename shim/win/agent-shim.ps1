@@ -86,7 +86,8 @@ if ($python -and (Test-Path -LiteralPath $watcher)) {
             '--agent',     $selfName,
             '--agent-pid', $PID,
             '--cwd',       $PWD.Path,
-            '--log-dir',   $logDir
+            '--log-dir',   $logDir,
+            '--real-bin',  $realBin
         ) | Out-Null
     } catch {
         # swallow -- observation is best-effort and stays out of the agent's way

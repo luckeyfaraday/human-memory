@@ -1,20 +1,26 @@
 # HUMAN_MEMORY.md
 
 ## Current State
-On branch `feat/whiteboard-partition` (stack: #3 config → #4 surface → this).
-Built the concurrency-safe per-agent whiteboard updater — the answer to "how do
-parallel agents share one HUMAN_MEMORY.md" and the primitive draft_update needs.
-Implemented + tested (incl. real multi-process concurrency). Ready to PR.
+On branch `feat/draft-update` (off main; #3/#4/#5 all merged). Built the marquee
+feature: `draft_update()` — the watcher now AUTHORS HUMAN_MEMORY.md, not just
+warns. Hybrid (deterministic skeleton + optional cheap-model polish), quiescence-
+triggered, opt-in. Implemented + tested (19 tests) + e2e verified. Ready to PR.
 
 ## What Just Happened
-- **Whiteboard partition** (this branch): `shim/whiteboard.py` — automated
-  writers own fenced `<!-- hm:agent=X -->` blocks; unfenced human text is sacred;
-  each writer does a locked, atomic RMW of only its own block. Single-agent stays
-  byte-identical. `tests/test_whiteboard.py` (first tests in the repo): purity,
-  idempotency, removal, sacred-text, + two real multi-process concurrency tests
-  (6 disjoint agents; 8 writers same agent) — all pass. `human-memory set AGENT`
-  exposes it; installers ship whiteboard.py; spec in docs/whiteboard-format.md.
-- **Surface staleness** (PR #4): watcher publishes one atomic JSON
+- **draft_update()** (this branch): `shim/drafter.py` + a drafting loop in
+  watcher.py. Hybrid: deterministic skeleton (`git status`/diff incl. UNTRACKED
+  files, newest file, TODOs) is the floor; cheap model polishes into the 5
+  sections; on any model failure/timeout → skeleton. Quiescence-triggered (idle
+  `quiescence_seconds`, default 25) + a final draft on exit; ONE draft per settled
+  chunk. Writes only its own fenced block via whiteboard.update_file, backs up to
+  .bak first, calls the REAL bin with AGENT_MEMORY_INTERNAL=1 (N1). OPT-IN
+  ([drafter] enabled=false default — it spends the user's tokens). Shim now passes
+  --real-bin. `tests/test_drafter.py` (12 tests) + e2e verified both hybrid and
+  deterministic-only paths. Decisions resolved in docs/llm-drafter-design.md.
+- **Whiteboard partition** (PR #5, merged): `shim/whiteboard.py` — fenced per-agent
+  blocks, locked atomic RMW; unfenced human text sacred. 7 tests incl. real
+  multi-process concurrency. spec: docs/whiteboard-format.md.
+- **Surface staleness** (PR #4, merged): watcher publishes one atomic JSON
   status file per session under `~/.agent-memory/state/`; cleared on exit (and
   pruned if a watcher is killed). New `shim/human-memory` CLI: `status` (live
   table of every agent + stale/fresh/behind), `show` (print a whiteboard),
@@ -32,13 +38,12 @@ Implemented + tested (incl. real multi-process concurrency). Ready to PR.
   llm-drafter design doc (PR #2, main).
 
 ## Pending
-- [ ] Open PR for feat/whiteboard-partition (stacked on #4)
-- [ ] draft_update() per docs/llm-drafter-design.md — DECISIONS MADE (mine, owner
-      delegated): quiescence-draft + quiescence-promote, cheap model, hybrid
-      deterministic+LLM. Now has its write primitive (whiteboard.update_file) AND
-      the N1 env-guard. Still need shim to export the resolved real bin (--real-bin).
-- [x] Multi-agent whiteboard merge — DECIDED + BUILT: per-agent fenced blocks,
-      locked atomic per-block writes. (was the blocker for draft_update)
+- [ ] Open PR for feat/draft-update (off main)
+- [x] draft_update() — BUILT + tested + e2e verified. Opt-in.
+- [ ] VALIDATE codex/opencode headless commands — only `claude -p` is verified;
+      the other two are best-effort guesses in DEFAULT_COMMANDS (drafter.py).
+      Needs a real run of each (spends tokens) before flipping defaults.
+- [ ] Optional: `.human-memory-promote` / `-hold` manual overrides (deferred in doc)
 - [ ] Polling → native inotify / ReadDirectoryChangesW
 - [ ] Resolution override / multi-agent config wiring
 - [ ] Code-sign Windows scripts
@@ -58,6 +63,8 @@ Implemented + tested (incl. real multi-process concurrency). Ready to PR.
   unrecoverable from diffs → LLM will confabulate rationales; accept/flag that.
 
 ## Where I Left Off
-`shim/human-memory` (new viewer) + `shim/watcher.py` (write_state/clear_state +
-publish() in the loop's try/finally). Next: commit + PR this branch. Then the
-big one — draft_update() — but resolve the multi-agent merge question first.
+draft_update() done on `feat/draft-update`: `shim/drafter.py` (collect_changes /
+build_skeleton / compose_prompt / run_agent / draft_block) + the `do_draft()`
+helper and quiescence/exit triggers in watcher.py's loop. 19 tests pass; install
++ shim wiring done. Next: commit + open PR (off main). After merge, the honest
+follow-up is validating the codex/opencode headless commands against real runs.

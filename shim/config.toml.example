@@ -22,3 +22,24 @@ ignore_dirs = [
 
 # File suffixes that don't count as "work" for staleness purposes.
 ignore_suffixes = [".pyc", ".log", ".swp", ".tmp"]
+
+[drafter]
+# Auto-author HUMAN_MEMORY.md from observed changes. OFF by default: when on, it
+# calls a model in the BACKGROUND using your own already-authed agent, which
+# spends your tokens and shares your rate limit with the session you're running.
+enabled = false
+
+# Cheap/fast model for the summary — the task is "summarize a diff into 5
+# sections", which doesn't need a frontier model.
+model = "haiku"
+
+# Draft once work has been idle this long (a settled checkpoint), and on exit.
+# Not on every edit — that would pay per draft and discard most of them.
+quiescence_seconds = 25
+
+# Hard cap on the drafter subprocess; it's killed and we keep the skeleton.
+timeout_seconds = 60
+
+# Feed `git diff` as the summarization input when in a git repo.
+include_git_diff = true
+
