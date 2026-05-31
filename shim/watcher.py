@@ -63,6 +63,7 @@ class Config:
     draft_quiescence_seconds: float = 25  # draft after work has been idle this long
     draft_timeout_seconds: float = 60    # hard cap on the drafter subprocess
     draft_include_git_diff: bool = True
+    draft_command: tuple[str, ...] | None = None
 
 
 def default_config_path() -> Path:
@@ -94,7 +95,7 @@ def load_config(path: Path | None = None) -> tuple[Config, str | None]:
     known = {"poll_seconds", "stale_edit_threshold", "stale_seconds_threshold",
              "ignore_dirs", "ignore_suffixes"}
     known_drafter = {"enabled", "model", "quiescence_seconds", "timeout_seconds",
-                     "include_git_diff"}
+                     "include_git_diff", "command"}
     unknown = (set(table) - known) | {f"drafter.{k}" for k in set(drafter) - known_drafter}
     # Coercing user-supplied values can raise (e.g. int("not-an-int")); a bad
     # config must fall back to defaults, never crash the watcher.
@@ -120,6 +121,11 @@ def load_config(path: Path | None = None) -> tuple[Config, str | None]:
             kwargs["draft_timeout_seconds"] = float(drafter["timeout_seconds"])
         if "include_git_diff" in drafter:
             kwargs["draft_include_git_diff"] = bool(drafter["include_git_diff"])
+        if "command" in drafter:
+            cmd = drafter["command"]
+            if not isinstance(cmd, list) or not all(isinstance(p, str) for p in cmd):
+                raise ValueError("drafter.command must be an array of strings")
+            kwargs["draft_command"] = tuple(cmd)
         config = Config(**kwargs)
     except (TypeError, ValueError) as e:
         return defaults, f"config {path} has bad values ({e}); using defaults"
@@ -312,7 +318,8 @@ def main() -> int:
                 root, args.agent, real_bin=args.real_bin, model=cfg.draft_model,
                 timeout=cfg.draft_timeout_seconds,
                 prev_block=whiteboard.extract_agent_block(content, args.agent),
-                include_git_diff=cfg.draft_include_git_diff)
+                include_git_diff=cfg.draft_include_git_diff,
+                command=list(cfg.draft_command) if cfg.draft_command else None)
             if mem_path.exists():  # one-revert-away safety net
                 shutil.copy2(mem_path, mem_path.with_name(mem_path.name + ".bak"))
             whiteboard.update_file(mem_path, args.agent, body)

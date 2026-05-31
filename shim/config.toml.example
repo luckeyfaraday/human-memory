@@ -43,3 +43,6 @@ timeout_seconds = 60
 # Feed `git diff` as the summarization input when in a git repo.
 include_git_diff = true
 
+# Optional: override the headless drafter invocation. Values are argv parts, not
+# a shell string. Supported placeholders: {bin}, {prompt}, {model}, {outfile}.
+# command = ["my-agent", "summarize", "{prompt}"]
