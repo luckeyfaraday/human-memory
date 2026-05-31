@@ -151,7 +151,8 @@ upgrade). Each tick it:
 2. Reads `HUMAN_MEMORY.md`'s mtime.
 3. If real work has happened but the whiteboard hasn't moved in `N` edits / `T`
    seconds → **stale**.
-4. On stale: emit a warning (and later, draft a suggested update from the diff).
+4. On stale: emit a warning — and, if drafting is enabled, author the whiteboard from
+   the diff once work settles (see *Auto-drafting* below).
 
 Staleness is about *relative* movement — work advancing while the memory stands still —
 not absolute time.
@@ -168,6 +169,8 @@ not absolute time.
     human-memory      # the viewer (this repo: shim/human-memory)
   lib/
     watcher.py        # freshness engine (this repo: shim/watcher.py)
+    whiteboard.py     # concurrency-safe per-agent block writer
+    drafter.py        # hybrid auto-drafter (deterministic skeleton + optional LLM)
   config.toml         # binary overrides, thresholds, ignore globs
   log/                # watcher logs, per-session
   state/              # live per-session status the viewer reads (auto-cleaned)
@@ -290,12 +293,50 @@ ignore_suffixes = [".pyc", ".log", ".swp", ".tmp"]
 A missing, malformed, or partially-bad config never crashes the watcher — it logs what
 went wrong and falls back to defaults (config problems are reported, not silent).
 
+### Auto-drafting (opt-in)
+
+The watcher can also *author* the whiteboard for you instead of only warning. It's
+**off by default** — when on, it calls a model in the background using your own
+already-authed agent, which spends your tokens and shares your rate limit:
+
+```toml
+[drafter]
+enabled = true            # default false
+model = "haiku"           # cheap model — the task is "summarize a diff into 5 sections"
+quiescence_seconds = 25   # draft when work settles (and on exit), not on every edit
+timeout_seconds = 60
+include_git_diff = true
+```
+
+How it works (see [`docs/llm-drafter-design.md`](docs/llm-drafter-design.md)):
+
+- **Hybrid.** A deterministic skeleton (`git status`/diff, newest file, TODO/FIXME)
+  needs no model and is the floor; the model only *polishes* it into the five
+  sections. If the model is slow, absent, or fails, you still get the skeleton.
+- **Quiescence-triggered.** One draft per settled work-chunk (and a final one on
+  exit) — not per edit — so it doesn't churn tokens or your rate limit.
+- **Safe writes.** It writes only its own fenced block via the concurrency-safe
+  updater (your text and other agents' blocks are untouched), backs up
+  `HUMAN_MEMORY.md` → `.bak` first, and calls the real binary with
+  `AGENT_MEMORY_INTERNAL=1` so it never re-enters the shim.
+- **Honest.** The *why* behind a decision usually isn't in a diff, so the model is
+  told to omit decisions it can't infer rather than invent them.
+
+> All three headless invocations are verified against the real binaries. They differ
+> in ways the defaults handle for you: `claude -p --model <model>` reads stdout;
+> `codex exec --sandbox read-only -o <file> …` reads a temp file (its stdout is
+> status chrome) and needs stdin closed; `opencode run …` reads stdout. The shared
+> `model` only applies to `claude` — `codex`/`opencode` use their own configured
+> default model. Override any of it with `[drafter] command`.
+
 ### Known limitations (MVP)
 
 - Watcher polls instead of using `inotify` — fine for a prototype, will burn a little
   idle CPU. Native inotify is the planned upgrade.
-- "Draft an update from the diff" is stubbed — currently warns only. Design recorded in
-  `docs/llm-drafter-design.md`.
+- Auto-drafting is opt-in. All three agents' headless commands are verified, but the
+  *quality* of LLM-polished drafts is only as good as the model and the diff (the
+  "why" behind decisions isn't in a diff — the prompt tells the model to omit rather
+  than invent it).
 - Resolution override / multi-agent config not yet wired.
 
 ---

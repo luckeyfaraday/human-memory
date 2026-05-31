@@ -27,6 +27,7 @@ foreach ($d in @($binDir, $libDir, $logDir)) { New-Item -ItemType Directory -For
 Copy-Item -Force (Join-Path $srcWin 'agent-shim.ps1') (Join-Path $binDir 'agent-shim.ps1')
 Copy-Item -Force (Join-Path $srcRoot 'watcher.py')     (Join-Path $libDir 'watcher.py')
 Copy-Item -Force (Join-Path $srcRoot 'whiteboard.py')  (Join-Path $libDir 'whiteboard.py')
+Copy-Item -Force (Join-Path $srcRoot 'drafter.py')     (Join-Path $libDir 'drafter.py')
 
 # The viewer (stdlib, cross-platform). The script has no extension, so install a
 # .cmd wrapper that runs it with python — that's what cmd.exe/PowerShell resolve.

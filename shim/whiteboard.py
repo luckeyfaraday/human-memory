@@ -58,6 +58,15 @@ def replace_agent_block(content: str, agent: str, body: str | None) -> str:
     return f"{content}{sep}{new_block}{tail}" if content else f"{new_block}\n"
 
 
+def extract_agent_block(content: str, agent: str) -> str | None:
+    """Return the body of `agent`'s block (without the markers), or None."""
+    if not AGENT_RE.match(agent):
+        return None
+    start, end = _markers(agent)
+    m = re.search(re.escape(start) + r"\n?(.*?)\n?" + re.escape(end), content, re.DOTALL)
+    return m.group(1) if m else None
+
+
 class _FileLock:
     """Portable advisory lock via O_CREAT|O_EXCL — works the same on POSIX and
     Windows, no fcntl/msvcrt split. Steals a lock older than `stale_after` so a

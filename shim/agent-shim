@@ -83,6 +83,7 @@ if [[ -z "${AGENT_MEMORY_INTERNAL:-}" \
       --agent-pid "$$" \
       --cwd "$PWD" \
       --log-dir "$log_dir" \
+      --real-bin "$real_bin" \
       </dev/null >/dev/null 2>&1 &
   disown 2>/dev/null || true
 fi
