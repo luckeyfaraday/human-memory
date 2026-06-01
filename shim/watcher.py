@@ -63,12 +63,13 @@ class Config:
     #     model in the background and spends the user's tokens. ---
     draft_enabled: bool = False
     draft_model: str = "haiku"           # Claude-only; Codex/OpenCode use their configured default
-    draft_quiescence_seconds: float = 120  # draft after work has been idle this long
+    draft_quiescence_seconds: float = 300  # draft after work has been idle this long
     draft_timeout_seconds: float = 60    # hard cap on the drafter subprocess
     draft_include_git_diff: bool = True
-    draft_min_edit_ticks: int = 3        # avoid LLM calls for tiny pauses
+    draft_min_edit_ticks: int = 6        # avoid LLM calls for tiny pauses
+    draft_min_diff_chars: int = 200      # skip LLM call when the diff is trivially small
     draft_max_drafts_per_session: int = 2  # mid-session drafts; exit draft is separate
-    draft_always_on_exit: bool = True
+    draft_always_on_exit: bool = False   # capture final state only when the user opts in
     draft_command: tuple[str, ...] | None = None
     memory_storage: str = "central"
 
@@ -113,8 +114,8 @@ def load_config(path: Path | None = None) -> tuple[Config, str | None]:
     known = {"poll_seconds", "stale_edit_threshold", "stale_seconds_threshold",
              "ignore_dirs", "ignore_suffixes"}
     known_drafter = {"enabled", "model", "quiescence_seconds", "timeout_seconds",
-                     "include_git_diff", "min_edit_ticks", "max_drafts_per_session",
-                     "always_on_exit", "command"}
+                     "include_git_diff", "min_edit_ticks", "min_diff_chars",
+                     "max_drafts_per_session", "always_on_exit", "command"}
     known_memory = {"storage"}
     unknown = (
         (set(table) - known)
@@ -148,6 +149,8 @@ def load_config(path: Path | None = None) -> tuple[Config, str | None]:
                 drafter["include_git_diff"], "drafter.include_git_diff")
         if "min_edit_ticks" in drafter:
             kwargs["draft_min_edit_ticks"] = int(drafter["min_edit_ticks"])
+        if "min_diff_chars" in drafter:
+            kwargs["draft_min_diff_chars"] = int(drafter["min_diff_chars"])
         if "max_drafts_per_session" in drafter:
             kwargs["draft_max_drafts_per_session"] = int(drafter["max_drafts_per_session"])
         if "always_on_exit" in drafter:
@@ -167,6 +170,8 @@ def load_config(path: Path | None = None) -> tuple[Config, str | None]:
             raise ValueError("drafter.quiescence_seconds must be >= 0")
         if config.draft_min_edit_ticks < 1:
             raise ValueError("drafter.min_edit_ticks must be >= 1")
+        if config.draft_min_diff_chars < 0:
+            raise ValueError("drafter.min_diff_chars must be >= 0")
         if config.draft_max_drafts_per_session < 0:
             raise ValueError("drafter.max_drafts_per_session must be >= 0")
     except (TypeError, ValueError) as e:
@@ -306,7 +311,7 @@ def bootstrap_missing_memory(root: Path, agent: str, owner: str,
     mem_path = memory_path or root / MEMORY_FILE
     if mem_path.exists():
         return False
-    body = drafter.draft_block(
+    body, _stats = drafter.draft_block(
         root, agent, real_bin=None, model="", timeout=0,
         prev_block=None, include_git_diff=include_git_diff)
     mem_path.parent.mkdir(parents=True, exist_ok=True)
@@ -317,7 +322,8 @@ def bootstrap_missing_memory(root: Path, agent: str, owner: str,
 def should_draft_quiescence(*, drafting: bool, unrecorded_edits: int,
                             last_edit_at: float | None, last_seen_newest: float,
                             last_drafted_newest: float, draft_count: int,
-                            cfg: Config, now_value: float) -> bool:
+                            diff_chars: int, cfg: Config,
+                            now_value: float) -> bool:
     """Return whether a mid-session quiescence draft should run."""
     return (
         drafting
@@ -326,18 +332,20 @@ def should_draft_quiescence(*, drafting: bool, unrecorded_edits: int,
         and last_seen_newest != last_drafted_newest
         and draft_count < cfg.draft_max_drafts_per_session
         and (now_value - last_edit_at) >= cfg.draft_quiescence_seconds
+        and diff_chars >= cfg.draft_min_diff_chars
     )
 
 
 def should_draft_exit(*, drafting: bool, unrecorded_edits: int,
                       last_seen_newest: float, last_drafted_newest: float,
-                      cfg: Config) -> bool:
+                      diff_chars: int, cfg: Config) -> bool:
     """Return whether the final checkpoint should draft on agent exit."""
     return (
         drafting
         and cfg.draft_always_on_exit
         and unrecorded_edits > 0
         and last_seen_newest != last_drafted_newest
+        and diff_chars >= cfg.draft_min_diff_chars
     )
 
 
@@ -441,7 +449,7 @@ def main() -> int:
         except OSError:
             content = ""
         try:
-            body = drafter.draft_block(
+            body, stats = drafter.draft_block(
                 root, args.agent, real_bin=args.real_bin, model=cfg.draft_model,
                 timeout=cfg.draft_timeout_seconds,
                 prev_block=whiteboard.extract_agent_block(content, owner),
@@ -460,7 +468,16 @@ def main() -> int:
         last_mem_mtime = memory_mtime(mem_path)
         if label != "exit":
             draft_count += 1
-        log_line(log_path, f"drafted ({label}): updated {owner} block in {mem_path}")
+        # Per-draft token-relevant metrics, so the user can see what each call
+        # cost without re-running the drafter. Char counts (~chars/4 ≈ tokens);
+        # agent-bootstrap overhead is not visible here.
+        metrics = (
+            f"diff={stats['diff_chars']} prev={stats['prev_block_chars']} "
+            f"prompt={stats['prompt_chars']} out={stats['output_chars']} "
+            f"model={'yes' if stats['model_called'] else 'no'}"
+        )
+        log_line(log_path, f"drafted ({label}): updated {owner} block in {mem_path} "
+                           f"[{metrics}]")
 
     publish(stale=False, work_age=0)
     try:
@@ -509,6 +526,14 @@ def main() -> int:
 
             # Quiescence draft: work happened, then settled — record it now. One
             # draft per settled chunk (last_drafted_newest gate).
+            diff_chars = 0
+            if drafting and last_edit_at is not None and drafter is not None:
+                try:
+                    info = drafter.collect_changes(root,
+                                                   include_git_diff=cfg.draft_include_git_diff)
+                    diff_chars = len(info["diff"])
+                except Exception:  # noqa: BLE001 — gating must never crash the watcher
+                    pass
             if should_draft_quiescence(
                     drafting=drafting,
                     unrecorded_edits=unrecorded_edits,
@@ -516,16 +541,26 @@ def main() -> int:
                     last_seen_newest=last_seen_newest,
                     last_drafted_newest=last_drafted_newest,
                     draft_count=draft_count,
+                    diff_chars=diff_chars,
                     cfg=cfg,
                     now_value=now()):
                 do_draft("quiescence")
     finally:
         # Final checkpoint: capture any work that never settled before exit.
+        exit_diff_chars = 0
+        if drafting and drafter is not None:
+            try:
+                info = drafter.collect_changes(root,
+                                               include_git_diff=cfg.draft_include_git_diff)
+                exit_diff_chars = len(info["diff"])
+            except Exception:  # noqa: BLE001
+                pass
         if should_draft_exit(
                 drafting=drafting,
                 unrecorded_edits=unrecorded_edits,
                 last_seen_newest=last_seen_newest,
                 last_drafted_newest=last_drafted_newest,
+                diff_chars=exit_diff_chars,
                 cfg=cfg):
             do_draft("exit")
         # Always retract our status so `human-memory` never shows a dead session.

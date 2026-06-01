@@ -320,10 +320,11 @@ already-authed agent, which spends your tokens and shares your rate limit:
 [drafter]
 enabled = true            # default false; must be a TOML boolean, not "true"/"false"
 model = "haiku"           # Claude-only; Codex uses gpt-5.4-mini, OpenCode uses its default
-quiescence_seconds = 120  # draft when work settles, not on every edit
-min_edit_ticks = 3        # skip LLM drafts for tiny pauses
+quiescence_seconds = 300  # draft when work settles, not on every edit
+min_edit_ticks = 6        # skip LLM drafts for tiny pauses
+min_diff_chars = 200      # skip LLM call when the diff is below this size
 max_drafts_per_session = 2
-always_on_exit = true     # final checkpoint is separate from the mid-session cap
+always_on_exit = false    # opt in to a final-checkpoint LLM call on agent exit
 timeout_seconds = 60
 include_git_diff = true
 # command = ["custom-agent", "--out", "{outfile}", "{prompt}"]
@@ -337,8 +338,12 @@ How it works (see [`docs/llm-drafter-design.md`](docs/llm-drafter-design.md)):
   the skeleton. Untracked filenames are listed, but untracked file contents are not
   scanned into model prompts by default.
 - **Quiescence-triggered and capped.** Drafts run after settled work chunks, but
-  only after enough edits and only up to `max_drafts_per_session`; a final exit
-  checkpoint captures remaining work.
+  only after enough edits *and* a diff above `min_diff_chars` *and* only up to
+  `max_drafts_per_session`. `always_on_exit = false` is the default — mid-session
+  drafts already capture settled work, and the exit call is the most expensive one
+  (a fresh agent subprocess for one final read) and is often redundant.
+- **Measured.** Every draft logs its per-section char counts and whether the model
+  was called, so you can see what each call cost without re-running it.
 - **Safe writes.** It writes only its own session-scoped fenced block via the
   concurrency-safe updater (your text and other sessions' blocks are untouched), backs up
   the project's `HUMAN_MEMORY.md` to `.bak` first, and calls the real binary with

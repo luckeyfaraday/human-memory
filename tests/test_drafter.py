@@ -230,24 +230,52 @@ class RunAgent(unittest.TestCase):
 class DraftBlock(unittest.TestCase):
     def test_no_real_bin_falls_back_to_skeleton(self):
         d = _repo_with_change()
-        body = dr.draft_block(d, "claude", real_bin=None, model="haiku", timeout=5,
-                              prev_block=None, include_git_diff=True)
+        body, stats = dr.draft_block(d, "claude", real_bin=None, model="haiku", timeout=5,
+                                     prev_block=None, include_git_diff=True)
         self.assertIn("skeleton only", body)
         self.assertIn("a.py", body)
+        self.assertFalse(stats["model_called"])
+        self.assertEqual(stats["prompt_chars"], 0)
+        self.assertEqual(stats["output_chars"], 0)
+        self.assertGreater(stats["diff_chars"], 0)
 
     def test_uses_model_output_when_available(self):
         d = _repo_with_change()
         b = _fake_bin('echo "## Current State\nMODEL SAYS HI"')
-        body = dr.draft_block(d, "claude", real_bin=b, model="haiku", timeout=5,
-                              prev_block=None, include_git_diff=True, command=[b])
+        body, stats = dr.draft_block(d, "claude", real_bin=b, model="haiku", timeout=5,
+                                     prev_block=None, include_git_diff=True, command=[b])
         self.assertIn("MODEL SAYS HI", body)
+        self.assertTrue(stats["model_called"])
+        self.assertGreater(stats["prompt_chars"], 0)
+        self.assertGreater(stats["output_chars"], 0)
+        # prompt = instruction + skeleton + diff, well above the skeleton alone
+        self.assertGreater(stats["prompt_chars"], stats["skeleton_chars"])
 
     def test_model_failure_falls_back_to_skeleton(self):
         d = _repo_with_change()
         b = _fake_bin("exit 1")
-        body = dr.draft_block(d, "claude", real_bin=b, model="haiku", timeout=5,
-                              prev_block=None, include_git_diff=True, command=[b])
+        body, stats = dr.draft_block(d, "claude", real_bin=b, model="haiku", timeout=5,
+                                     prev_block=None, include_git_diff=True, command=[b])
         self.assertIn("skeleton only", body)
+        self.assertFalse(stats["model_called"])
+        self.assertGreater(stats["prompt_chars"], 0)
+        self.assertEqual(stats["output_chars"], 0)
+
+    def test_prev_block_size_is_reported(self):
+        d = _repo_with_change()
+        b = _fake_bin('echo OK')
+        prev = "## Current State\n" + ("line\n" * 50)
+        _, stats = dr.draft_block(d, "claude", real_bin=b, model="haiku", timeout=5,
+                                  prev_block=prev, include_git_diff=True, command=[b])
+        self.assertEqual(stats["prev_block_chars"], len(prev))
+
+    def test_stats_use_zero_when_model_unavailable(self):
+        d = _repo_with_change()
+        _, stats = dr.draft_block(d, "claude", real_bin=None, model="haiku", timeout=5,
+                                  prev_block="hello", include_git_diff=True)
+        self.assertEqual(stats["prev_block_chars"], 5)  # "hello" still counted
+        self.assertEqual(stats["prompt_chars"], 0)
+        self.assertEqual(stats["output_chars"], 0)
 
 
 if __name__ == "__main__":

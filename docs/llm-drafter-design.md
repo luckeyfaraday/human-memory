@@ -70,10 +70,36 @@ Drafting is quiescence-triggered, not continuous:
 
 1. The watcher observes work edits after the last memory update.
 2. A mid-session draft can run after `min_edit_ticks` and
-   `quiescence_seconds` of no new edits, up to `max_drafts_per_session`.
-3. A final exit draft can capture remaining work when `always_on_exit = true`.
+   `quiescence_seconds` of no new edits, when the (memory-artifact-filtered)
+   git diff is at least `min_diff_chars` characters, and only up to
+   `max_drafts_per_session` per session.
+3. A final exit draft can capture remaining work when `always_on_exit = true`
+   (off by default — the mid-session draft already covers settled work, and
+   the exit call is the most expensive one because it forces a fresh agent
+   subprocess for one final read).
 
 This creates settled checkpoints instead of spending tokens on every poll.
+
+## Cost: what each draft actually pays
+
+Each draft invokes the user's full agent as a subprocess (claude / codex /
+opencode). The agent then re-loads its system prompt, tool definitions,
+`CLAUDE.md`, and any conversation history on every call — typically **~8–15k
+tokens of overhead we never see in the drafter prompt**. The drafter prompt
+itself is bounded by `MAX_DIFF_CHARS` (≈ 3k tokens worst case) plus a
+~200-token skeleton and a ~250-token previous block. Net result: only
+**~3–4% of tokens billed per draft** end up as the visible polished output
+the user actually reads.
+
+To make this visible, every draft logs its input/output section char counts
+alongside the `drafted` line in the watcher log. The skeleton path
+(`real_bin = None` or model failure) reports `model_called = no` so you can
+see how often the deterministic floor is the answer.
+
+The token-thrift defaults (`quiescence_seconds = 300`, `min_edit_ticks = 6`,
+`min_diff_chars = 200`, `always_on_exit = false`) exist because in practice
+~95% of an LLM-polished draft is overhead; the skeleton is the floor and
+is almost always good enough.
 
 ## Safety and privacy boundaries
 
