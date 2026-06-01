@@ -21,6 +21,7 @@ or break the agent session. stdlib + git only.
 from __future__ import annotations
 
 import os
+import shlex
 import subprocess
 import tempfile
 from pathlib import Path
@@ -88,43 +89,158 @@ def _git(root: Path, *args: str, timeout: float = 5) -> str | None:
     return out.stdout if out.returncode == 0 else None
 
 
+def _git_bytes(root: Path, *args: str, timeout: float = 5) -> bytes | None:
+    try:
+        out = subprocess.run(["git", "-C", str(root), *args],
+                             capture_output=True, timeout=timeout)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return out.stdout if out.returncode == 0 else None
+
+
 def is_git_repo(root: Path) -> bool:
     return _git(root, "rev-parse", "--is-inside-work-tree") is not None
+
+
+def is_memory_artifact(path: str | Path) -> bool:
+    """Return whether a project-relative path is human-memory's own state."""
+    parts = Path(path).parts
+    if ".agent-memory" in parts:
+        return True
+    name = parts[-1] if parts else str(path)
+    return name == MEMORY_FILE or name.startswith(f"{MEMORY_FILE}.")
+
+
+def filter_memory_artifacts(paths: list[str]) -> list[str]:
+    return [p for p in paths if not is_memory_artifact(p)]
+
+
+def _diff_path_token(path: str) -> str | None:
+    path = path.strip().split("\t", 1)[0]
+    if path == "/dev/null":
+        return None
+    if path.startswith("a/") or path.startswith("b/"):
+        return path[2:]
+    return path or None
+
+
+def _diff_header_paths(line: str) -> list[str]:
+    if not line.startswith("diff --git "):
+        return []
+    try:
+        parts = shlex.split(line.strip())
+    except ValueError:
+        parts = line.strip().split()
+    paths = []
+    for token in parts[2:4]:
+        path = _diff_path_token(token)
+        if path:
+            paths.append(path)
+    return paths
+
+
+def _diff_section_paths(section: list[str]) -> list[str]:
+    """Return project-relative paths named by a unified diff section."""
+    paths = []
+    for line in section:
+        if line.startswith("diff --git "):
+            paths.extend(_diff_header_paths(line))
+        for prefix in ("--- ", "+++ "):
+            if line.startswith(prefix):
+                path = _diff_path_token(line[len(prefix):])
+                if path:
+                    paths.append(path)
+        if line.startswith("rename from ") or line.startswith("rename to "):
+            paths.append(line.split(" ", 2)[2].strip())
+    return paths
+
+
+def filter_memory_artifact_diff(diff: str) -> str:
+    """Drop unified-diff sections for human-memory's own files."""
+    sections: list[list[str]] = []
+    current: list[str] = []
+    for line in diff.splitlines(keepends=True):
+        if line.startswith("diff --git "):
+            if current:
+                sections.append(current)
+            current = [line]
+        else:
+            current.append(line)
+    if current:
+        sections.append(current)
+
+    kept: list[str] = []
+    for section in sections:
+        paths = _diff_section_paths(section)
+        if paths and any(is_memory_artifact(path) for path in paths):
+            continue
+        kept.extend(section)
+    return "".join(kept)
+
+
+def _parse_status_z(raw: bytes) -> tuple[list[str], set[str]]:
+    """Parse `git status --porcelain=v1 -z` into changed and tracked-content paths."""
+    changed: list[str] = []
+    content_safe: set[str] = set()
+    records = [r for r in raw.decode("utf-8", errors="surrogateescape").split("\0") if r]
+    i = 0
+    while i < len(records):
+        record = records[i]
+        if len(record) < 4:
+            i += 1
+            continue
+        status = record[:2]
+        path = record[3:]
+        if status.startswith("R") or status.startswith("C"):
+            if i + 1 < len(records):
+                old_path = records[i + 1]
+                changed.append(path)
+                if not status.startswith("??") and not status.startswith("!!"):
+                    content_safe.add(path)
+                    content_safe.add(old_path)
+                i += 2
+                continue
+        changed.append(path)
+        if not status.startswith("??") and not status.startswith("!!"):
+            content_safe.add(path)
+        i += 1
+    return changed, content_safe
 
 
 def collect_changes(root: Path, include_git_diff: bool = True) -> dict:
     """Gather the deterministic facts a draft is built from.
 
     Returns {changed_files, newest_file, todos, diff}. Prefers git; falls back to
-    an mtime walk when not a repo.
+    an mtime walk when not a repo. Untracked filenames are listed, but their
+    contents are not read into TODOs by default because drafts may be sent to a
+    model provider.
     """
     info: dict = {"changed_files": [], "newest_file": None, "todos": [], "diff": ""}
+    todo_paths: set[str] | None = None
 
     if include_git_diff and is_git_repo(root):
-        # `git status --porcelain` so we also catch NEW (untracked) files — a
-        # coding agent creating files is exactly the common case, and `git diff
-        # HEAD` alone would miss them.
-        status = _git(root, "status", "--porcelain") or ""
-        files = []
-        for line in status.splitlines():
-            if not line.strip():
-                continue
-            path = line[3:]
-            if " -> " in path:        # rename: take the new name
-                path = path.split(" -> ", 1)[1]
-            files.append(path.strip().strip('"'))
-        info["changed_files"] = files
+        # NUL-delimited porcelain keeps spaces, quotes, arrows, and unusual bytes
+        # unambiguous. Untracked files are listed as changed, but only tracked
+        # files are read for TODO/FIXME content to avoid leaking scratch secrets.
+        status = _git_bytes(root, "status", "--porcelain=v1", "-z") or b""
+        files, todo_paths = _parse_status_z(status)
+        info["changed_files"] = filter_memory_artifacts(files)
+        todo_paths = set(filter_memory_artifacts(sorted(todo_paths)))
         diff = _git(root, "diff", "HEAD") or ""  # tracked changes (untracked listed above)
-        info["diff"] = diff[:MAX_DIFF_CHARS]
+        info["diff"] = filter_memory_artifact_diff(diff)[:MAX_DIFF_CHARS]
     else:
-        # No git: newest few files by mtime, excluding the whiteboard itself.
+        # No git: newest few files by mtime, excluding human-memory's own state.
         files = []
         for dp, dirs, fns in os.walk(root):
-            dirs[:] = [d for d in dirs if not d.startswith(".") and d != "node_modules"]
+            dirs[:] = [
+                d for d in dirs
+                if not d.startswith(".") and d not in {"node_modules", ".agent-memory"}
+            ]
             for fn in fns:
-                if fn == MEMORY_FILE:
-                    continue
                 p = Path(dp) / fn
+                rel = p.relative_to(root)
+                if is_memory_artifact(rel):
+                    continue
                 try:
                     files.append((p.stat().st_mtime, p))
                 except OSError:
@@ -143,8 +259,12 @@ def collect_changes(root: Path, include_git_diff: bool = True) -> dict:
         if m > newest_mtime:
             newest_mtime, info["newest_file"] = m, rel
 
-    # TODO/FIXME in changed files (cheap pending-work signal).
+    # TODO/FIXME in changed files (cheap pending-work signal). In git repos,
+    # restrict content reads to tracked files; untracked filenames can be useful
+    # context, but their contents may be private scratch data.
     for rel in info["changed_files"][:20]:
+        if todo_paths is not None and rel not in todo_paths:
+            continue
         p = root / rel
         try:
             for i, line in enumerate(p.read_text(errors="ignore").splitlines(), 1):
@@ -214,12 +334,21 @@ def run_agent(real_bin: str, agent: str, prompt: str, model: str,
         "model": model,
         "agent_model": str(spec.get("agent_model") or model),
     }
-    if spec["read"] == "outfile":
+    needs_outfile = spec["read"] == "outfile" or any("{outfile}" in part for part in spec["argv"])
+    if needs_outfile:
         fd, outfile = tempfile.mkstemp(prefix="hm-draft-", suffix=".md")
         os.close(fd)
         fields["outfile"] = outfile
 
-    argv = [part.format(**fields) for part in spec["argv"]]
+    try:
+        argv = [part.format(**fields) for part in spec["argv"]]
+    except KeyError:
+        if outfile:
+            try:
+                os.unlink(outfile)
+            except OSError:
+                pass
+        return None
     env = {**os.environ, "AGENT_MEMORY_INTERNAL": "1"}  # N1: never re-spawn a watcher
     try:
         # stdin=DEVNULL is REQUIRED: `codex exec` reads stdin for extra context
@@ -229,7 +358,7 @@ def run_agent(real_bin: str, agent: str, prompt: str, model: str,
                              timeout=timeout, env=env, stdin=subprocess.DEVNULL)
         if out.returncode != 0:
             return None
-        if spec["read"] == "outfile":
+        if spec["read"] == "outfile" or (command is not None and outfile):
             answer = Path(outfile).read_text().strip()
         elif spec["read"] == "opencode_json":
             answer = parse_opencode_json(out.stdout) or ""

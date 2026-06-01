@@ -93,6 +93,24 @@ class WatcherConfig(unittest.TestCase):
         self.assertEqual(cfg.draft_min_edit_ticks, watcher.Config().draft_min_edit_ticks)
         self.assertIn("bad values", note)
 
+    def test_quoted_boolean_values_fall_back_to_defaults(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "config.toml"
+            p.write_text(
+                '[drafter]\n'
+                'enabled = "false"\n'
+                'include_git_diff = "false"\n'
+                'always_on_exit = "false"\n'
+            )
+
+            cfg, note = watcher.load_config(p)
+
+        defaults = watcher.Config()
+        self.assertEqual(cfg.draft_enabled, defaults.draft_enabled)
+        self.assertEqual(cfg.draft_include_git_diff, defaults.draft_include_git_diff)
+        self.assertEqual(cfg.draft_always_on_exit, defaults.draft_always_on_exit)
+        self.assertIn("must be a TOML boolean", note)
+
 
 class DraftGates(unittest.TestCase):
     def test_quiescence_requires_min_edits_and_budget(self):

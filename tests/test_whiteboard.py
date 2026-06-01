@@ -6,7 +6,9 @@ stdlib only; no pytest dependency.
 
 import importlib.util
 import multiprocessing
+import os
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -70,6 +72,33 @@ def _worker(args):
     path, agent, n = args
     for i in range(n):
         wb.update_file(Path(path), agent, f"{agent} iter {i}")
+
+
+class FileLockEdges(unittest.TestCase):
+    def test_lock_timeout(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "HUMAN_MEMORY.md"
+            lock_path = path.with_suffix(path.suffix + ".lock")
+            fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            try:
+                with self.assertRaises(TimeoutError):
+                    wb.update_file(path, "agent-1", "body", timeout=0.01)
+            finally:
+                os.close(fd)
+                lock_path.unlink()
+
+    def test_stale_lock_is_stolen(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "HUMAN_MEMORY.md"
+            lock_path = path.with_suffix(path.suffix + ".lock")
+            lock_path.write_text("stale")
+            old = time.time() - 120
+            os.utime(lock_path, (old, old))
+
+            wb.update_file(path, "agent-1", "body", timeout=1)
+
+            self.assertIn("body", path.read_text())
+            self.assertFalse(lock_path.exists())
 
 
 class ConcurrentWriters(unittest.TestCase):

@@ -4,3 +4,6 @@
 # Watcher runtime output (installed location is ~/.agent-memory, but ignore stray local logs)
 *.log
 __pycache__/
+HUMAN_MEMORY.md.bak
+HUMAN_MEMORY.md.*
+.agent-memory/
