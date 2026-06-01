@@ -92,6 +92,47 @@ def is_git_repo(root: Path) -> bool:
     return _git(root, "rev-parse", "--is-inside-work-tree") is not None
 
 
+def is_memory_artifact(path: str | Path) -> bool:
+    """Return whether a project-relative path is human-memory's own state."""
+    parts = Path(path).parts
+    if ".agent-memory" in parts:
+        return True
+    name = parts[-1] if parts else str(path)
+    return name == MEMORY_FILE or name.startswith(f"{MEMORY_FILE}.")
+
+
+def filter_memory_artifacts(paths: list[str]) -> list[str]:
+    return [p for p in paths if not is_memory_artifact(p)]
+
+
+def filter_memory_artifact_diff(diff: str) -> str:
+    """Drop unified-diff sections for human-memory's own files."""
+    sections: list[list[str]] = []
+    current: list[str] = []
+    for line in diff.splitlines(keepends=True):
+        if line.startswith("diff --git "):
+            if current:
+                sections.append(current)
+            current = [line]
+        else:
+            current.append(line)
+    if current:
+        sections.append(current)
+
+    kept: list[str] = []
+    for section in sections:
+        header = section[0] if section else ""
+        pieces = header.strip().split()
+        # Format: diff --git a/path b/path. Use the b/ side; for deletes this is
+        # still the project-relative path we want to exclude.
+        if len(pieces) >= 4:
+            b_path = pieces[3]
+            if b_path.startswith("b/") and is_memory_artifact(b_path[2:]):
+                continue
+        kept.extend(section)
+    return "".join(kept)
+
+
 def collect_changes(root: Path, include_git_diff: bool = True) -> dict:
     """Gather the deterministic facts a draft is built from.
 
@@ -113,18 +154,22 @@ def collect_changes(root: Path, include_git_diff: bool = True) -> dict:
             if " -> " in path:        # rename: take the new name
                 path = path.split(" -> ", 1)[1]
             files.append(path.strip().strip('"'))
-        info["changed_files"] = files
+        info["changed_files"] = filter_memory_artifacts(files)
         diff = _git(root, "diff", "HEAD") or ""  # tracked changes (untracked listed above)
-        info["diff"] = diff[:MAX_DIFF_CHARS]
+        info["diff"] = filter_memory_artifact_diff(diff)[:MAX_DIFF_CHARS]
     else:
-        # No git: newest few files by mtime, excluding the whiteboard itself.
+        # No git: newest few files by mtime, excluding human-memory's own state.
         files = []
         for dp, dirs, fns in os.walk(root):
-            dirs[:] = [d for d in dirs if not d.startswith(".") and d != "node_modules"]
+            dirs[:] = [
+                d for d in dirs
+                if not d.startswith(".") and d not in {"node_modules", ".agent-memory"}
+            ]
             for fn in fns:
-                if fn == MEMORY_FILE:
-                    continue
                 p = Path(dp) / fn
+                rel = p.relative_to(root)
+                if is_memory_artifact(rel):
+                    continue
                 try:
                     files.append((p.stat().st_mtime, p))
                 except OSError:

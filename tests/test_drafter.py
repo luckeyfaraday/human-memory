@@ -62,6 +62,38 @@ class CollectAndSkeleton(unittest.TestCase):
         info = dr.collect_changes(d)
         self.assertIn("brand_new.py", info["changed_files"])
 
+    def test_collect_ignores_memory_artifacts(self):
+        d = _repo_with_change()
+        (d / "HUMAN_MEMORY.md").write_text("# stale handoff\nTODO: noisy\n")
+        (d / "HUMAN_MEMORY.md.bak").write_text("# backup\nTODO: also noisy\n")
+        (d / ".agent-memory").mkdir()
+        (d / ".agent-memory" / "scratch.txt").write_text("TODO: central noise\n")
+
+        info = dr.collect_changes(d)
+
+        self.assertIn("a.py", info["changed_files"])
+        self.assertNotIn("HUMAN_MEMORY.md", info["changed_files"])
+        self.assertNotIn("HUMAN_MEMORY.md.bak", info["changed_files"])
+        self.assertFalse(any("HUMAN_MEMORY.md" in t for t in info["todos"]))
+
+    def test_diff_ignores_tracked_memory_artifacts(self):
+        d = Path(tempfile.mkdtemp())
+        _git(d, "init")
+        _git(d, "config", "user.email", "t@t")
+        _git(d, "config", "user.name", "t")
+        (d / "HUMAN_MEMORY.md").write_text("# initial\n")
+        (d / "real.py").write_text("x = 1\n")
+        _git(d, "add", "-A")
+        _git(d, "commit", "-m", "init")
+        (d / "HUMAN_MEMORY.md").write_text("# changed memory\n")
+        (d / "real.py").write_text("x = 2\n")
+
+        info = dr.collect_changes(d)
+
+        self.assertEqual(info["changed_files"], ["real.py"])
+        self.assertIn("real.py", info["diff"])
+        self.assertNotIn("HUMAN_MEMORY.md", info["diff"])
+
     def test_skeleton_has_five_sections(self):
         d = _repo_with_change()
         sk = dr.build_skeleton(dr.collect_changes(d))
