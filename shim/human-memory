@@ -8,6 +8,7 @@ reaches *you* instead of dying in a logfile.
     human-memory            # status table of all live sessions (default)
     human-memory status     # same
     human-memory show [dir] # print the HUMAN_MEMORY.md for dir (default: cwd)
+    human-memory ui         # start a local browser dashboard
     human-memory nag        # one line iff THIS dir has a stale session (for
                             #   a shell prompt hook); silent otherwise
     human-memory set OWNER  # set OWNER's fenced block in the cwd whiteboard from
@@ -49,6 +50,10 @@ def _load_whiteboard():
 
 def _load_memory_store():
     return _load_sibling("memory_store")
+
+
+def _load_ui():
+    return _load_sibling("ui")
 # A status file whose process is gone but that was never cleaned (e.g. the
 # watcher was hard-killed) is considered stale-on-disk after this long.
 ORPHAN_SECONDS = 90
@@ -152,13 +157,19 @@ def cmd_status(_args: list[str]) -> int:
     return 0
 
 
+def _report_config_note(note: str | None) -> None:
+    if note and not note.startswith("loaded ") and not note.startswith("no config "):
+        print(f"human-memory: {note}", file=sys.stderr)
+
+
 def cmd_show(args: list[str]) -> int:
     ms = _load_memory_store()
     root = Path(args[0]) if args else Path.cwd()
     if ms is None:
         p = root / MEMORY_FILE
     else:
-        storage, _note = ms.load_storage()
+        storage, note = ms.load_storage()
+        _report_config_note(note)
         p = ms.resolve(root, storage).path
     try:
         sys.stdout.write(p.read_text())
@@ -196,7 +207,8 @@ def cmd_set(args: list[str]) -> int:
         if ms is None:
             p = Path.cwd() / MEMORY_FILE
         else:
-            storage, _note = ms.load_storage()
+            storage, note = ms.load_storage()
+            _report_config_note(note)
             location = ms.resolve(Path.cwd(), storage)
             ms.ensure_location(location)
             p = location.path
@@ -207,7 +219,32 @@ def cmd_set(args: list[str]) -> int:
     return 0
 
 
-COMMANDS = {"status": cmd_status, "show": cmd_show, "nag": cmd_nag, "set": cmd_set}
+def cmd_ui(args: list[str]) -> int:
+    """Start the local browser dashboard."""
+    import argparse
+
+    ui = _load_ui()
+    ms = _load_memory_store()
+    if ui is None or ms is None:
+        print("human-memory: ui.py or memory_store.py not found", file=sys.stderr)
+        return 1
+    ap = argparse.ArgumentParser(prog="human-memory ui")
+    ap.add_argument("--host", default="127.0.0.1")
+    ap.add_argument("--port", type=int, default=8765)
+    ap.add_argument("--open", action="store_true", help="open the dashboard in a browser")
+    ap.add_argument("--quiet", action="store_true", help="suppress request logs")
+    ns = ap.parse_args(args)
+    return ui.serve(sys.modules[__name__], ms, host=ns.host, port=ns.port,
+                    open_browser=ns.open, quiet=ns.quiet)
+
+
+COMMANDS = {
+    "status": cmd_status,
+    "show": cmd_show,
+    "nag": cmd_nag,
+    "set": cmd_set,
+    "ui": cmd_ui,
+}
 
 
 def main(argv: list[str]) -> int:
