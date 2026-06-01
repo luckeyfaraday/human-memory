@@ -210,7 +210,8 @@ This repo currently contains a **working proof-of-concept** of stages 2–3:
   under `~/.agent-memory/projects/` or legacy repo-local storage.
 - `shim/human-memory` — the viewer: `human-memory` shows a live status table of
   every running agent and whether each one's whiteboard is stale; `human-memory show`
-  prints a whiteboard; `human-memory nag` is a one-liner for a shell prompt hook.
+  prints a whiteboard; `human-memory ui` starts a local browser dashboard;
+  `human-memory nag` is a one-liner for a shell prompt hook.
 - `shim/install.sh` — sets up `~/.agent-memory/bin`, symlinks, and prints the
   one `PATH` line to add to your shell rc.
 - `shim/win/` — the Windows port: `agent-shim.ps1` (PowerShell engine),
@@ -226,6 +227,7 @@ shim/install.sh                      # creates ~/.agent-memory, symlinks, prints
 claude                               # runs the REAL claude; watcher spins up underneath
 human-memory                         # status table of every running agent + staleness
 human-memory show                    # print the current dir's resolved HUMAN_MEMORY.md
+human-memory ui                      # browser dashboard at http://127.0.0.1:8765/
 ```
 
 `human-memory` reads each watcher's live status, so stale project memory reaches your eyes
@@ -316,7 +318,7 @@ already-authed agent, which spends your tokens and shares your rate limit:
 
 ```toml
 [drafter]
-enabled = true            # default false
+enabled = true            # default false; must be a TOML boolean, not "true"/"false"
 model = "haiku"           # Claude-only; Codex uses gpt-5.4-mini, OpenCode uses its default
 quiescence_seconds = 120  # draft when work settles, not on every edit
 min_edit_ticks = 3        # skip LLM drafts for tiny pauses
@@ -324,13 +326,16 @@ max_drafts_per_session = 2
 always_on_exit = true     # final checkpoint is separate from the mid-session cap
 timeout_seconds = 60
 include_git_diff = true
+# command = ["custom-agent", "--out", "{outfile}", "{prompt}"]
 ```
 
 How it works (see [`docs/llm-drafter-design.md`](docs/llm-drafter-design.md)):
 
-- **Hybrid.** A deterministic skeleton (`git status`/diff, newest file, TODO/FIXME)
-  needs no model and is the floor; the model only *polishes* it into the five
-  sections. If the model is slow, absent, or fails, you still get the skeleton.
+- **Hybrid.** A deterministic skeleton (`git status`/diff, newest file, tracked-file
+  TODO/FIXME markers) needs no model and is the floor; the model only *polishes*
+  it into the five sections. If the model is slow, absent, or fails, you still get
+  the skeleton. Untracked filenames are listed, but untracked file contents are not
+  scanned into model prompts by default.
 - **Quiescence-triggered and capped.** Drafts run after settled work chunks, but
   only after enough edits and only up to `max_drafts_per_session`; a final exit
   checkpoint captures remaining work.
@@ -356,7 +361,19 @@ How it works (see [`docs/llm-drafter-design.md`](docs/llm-drafter-design.md)):
   *quality* of LLM-polished drafts is only as good as the model and the diff (the
   "why" behind decisions isn't in a diff — the prompt tells the model to omit rather
   than invent it).
-- Resolution override / multi-agent config not yet wired.
+- Real-binary override is wired with `AGENT_MEMORY_REAL_CLAUDE`,
+  `AGENT_MEMORY_REAL_CODEX`, and `AGENT_MEMORY_REAL_OPENCODE` (or the matching
+  uppercased agent name). Config-file-based binary overrides are not yet wired.
+- In project-file mode, auto-drafting may create `HUMAN_MEMORY.md.bak`; it is a
+  local safety copy and should not be committed.
+
+### Testing
+
+Run the stdlib test suite from the repository root:
+
+```bash
+python3 -m unittest discover -s tests
+```
 
 ---
 

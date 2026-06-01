@@ -10,6 +10,7 @@ import hashlib
 import json
 import os
 import re
+import tempfile
 import tomllib
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -74,9 +75,23 @@ def ensure_location(location: MemoryLocation) -> None:
         "storage": location.storage,
         "updated": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
     }
-    tmp = location.metadata_path.with_suffix(location.metadata_path.suffix + ".tmp")
-    tmp.write_text(json.dumps(payload, indent=2) + "\n")
-    tmp.replace(location.metadata_path)
+    fd, tmp_name = tempfile.mkstemp(
+        prefix=location.metadata_path.name + ".",
+        suffix=".tmp",
+        dir=str(location.metadata_path.parent),
+        text=True,
+    )
+    tmp = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "w") as f:
+            f.write(json.dumps(payload, indent=2) + "\n")
+        tmp.replace(location.metadata_path)
+    except Exception:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        raise
 
 
 def load_storage(path: Path | None = None) -> tuple[str, str | None]:
@@ -91,7 +106,10 @@ def load_storage(path: Path | None = None) -> tuple[str, str | None]:
     memory = data.get("memory", {})
     if not isinstance(memory, dict):
         return "central", f"config {path} has bad [memory] table; using central"
-    storage = str(memory.get("storage", "central"))
+    storage = memory.get("storage", "central")
+    if not isinstance(storage, str):
+        return "central", (f"config {path} has bad memory.storage ({storage!r}); "
+                           "expected string; using central")
     if storage not in VALID_STORAGE:
         return "central", f"config {path} has bad memory.storage ({storage}); using central"
     return storage, f"loaded memory storage from {path}: {storage}"

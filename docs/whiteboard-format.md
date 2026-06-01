@@ -88,6 +88,7 @@ echo "## Current State
 …" | human-memory set claude-10101
 ```
 
-This is the primitive a future watcher-driven `draft_update()` will call (see
+This is the primitive the watcher-driven auto-drafter calls (see
 [llm-drafter-design.md](llm-drafter-design.md)), so automated drafting inherits
-the same no-clobber guarantee for free.
+the same no-clobber guarantee. Before an automated write to an existing file,
+the watcher keeps a local `HUMAN_MEMORY.md.bak` safety copy.

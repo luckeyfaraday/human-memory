@@ -69,3 +69,29 @@ build_skeleton / compose_prompt / run_agent / draft_block) + the `do_draft()`
 helper and quiescence/exit triggers in watcher.py's loop. 19 tests pass; install
 + shim wiring done. Next: commit + open PR (off main). After merge, the honest
 follow-up is validating the codex/opencode headless commands against real runs.
+
+<!-- hm:session=codex-613244 -->
+## Current State
+- Draft-update hardening is in progress in [`shim/drafter.py`](/home/alan/home_ai/projects/human-memory/shim/drafter.py#L156), [`shim/watcher.py`](/home/alan/home_ai/projects/human-memory/shim/watcher.py#L84), and [`tests/test_drafter.py`](/home/alan/home_ai/projects/human-memory/tests/test_drafter.py#L54).
+- Focus is safer git-status parsing, stricter config validation, and edge-case coverage for path handling.
+
+## What Just Happened
+- [`shim/drafter.py`](/home/alan/home_ai/projects/human-memory/shim/drafter.py#L156): added `_git_bytes()` and `_parse_status_z()`; `collect_changes()` now reads `git status --porcelain=v1 -z`, keeps untracked files in `changed_files`, but skips untracked content when scanning TODO/FIXME; diff filtering now parses section paths and renames instead of trusting the header.
+- [`shim/drafter.py`](/home/alan/home_ai/projects/human-memory/shim/drafter.py#L289): `run_agent()` now allocates an outfile whenever `argv` references `{outfile}`, and cleans up on placeholder expansion failure.
+- [`shim/watcher.py`](/home/alan/home_ai/projects/human-memory/shim/watcher.py#L84): config booleans are now strict TOML booleans via `_config_bool()` for `drafter.enabled`, `include_git_diff`, and `always_on_exit`.
+- [`tests/test_drafter.py`](/home/alan/home_ai/projects/human-memory/tests/test_drafter.py#L54): added coverage for untracked scratch TODO suppression, filenames with spaces/arrows, and `{outfile}` handling.
+
+## Pending
+- [ ] Re-run `tests/test_drafter.py` after the git-status and outfile changes.
+- [ ] Check the new status parser against a real rename/untracked-space-path repo.
+- [ ] Decide whether the stricter TOML boolean validation needs user-facing config docs.
+
+## Key Decisions
+- Use NUL-delimited git porcelain to preserve filenames exactly.
+- Do not scan untracked files for TODO/FIXME text in git repos.
+- Require real booleans in watcher config instead of coercing with `bool()`.
+- Create temp outfiles when any command template needs `{outfile}`, not just outfile-read agents.
+
+## Where I Left Off
+- Most recent work is in [`shim/drafter.py`](/home/alan/home_ai/projects/human-memory/shim/drafter.py#L156) around `_parse_status_z()`, `collect_changes()`, and `run_agent()`, with follow-up validation in [`tests/test_drafter.py`](/home/alan/home_ai/projects/human-memory/tests/test_drafter.py#L54) and [`shim/watcher.py`](/home/alan/home_ai/projects/human-memory/shim/watcher.py#L84).
+<!-- /hm:session=codex-613244 -->

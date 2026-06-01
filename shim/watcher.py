@@ -8,8 +8,8 @@ memory is *stale* — and we say so.
 
 Staleness here is RELATIVE: work moving while memory doesn't. Not absolute age.
 
-MVP scope: detect + warn (to a per-session log). Drafting an update from the
-diff is the next step and is intentionally stubbed below.
+MVP scope: detect + warn (to a per-session log). Optional auto-drafting can
+also update this session's fenced block when enabled in config.
 
 Lifecycle: exits when the agent process (--agent-pid) exits, so it never
 outlives the command that launched it. stdlib only; no inotify (not available
@@ -81,6 +81,12 @@ def default_config_path() -> Path:
     return Path(home) / "config.toml"
 
 
+def _config_bool(value, key: str) -> bool:
+    if not isinstance(value, bool):
+        raise ValueError(f"{key} must be a TOML boolean")
+    return value
+
+
 def load_config(path: Path | None = None) -> tuple[Config, str | None]:
     """Load Config from a config.toml [watcher] table.
 
@@ -130,7 +136,7 @@ def load_config(path: Path | None = None) -> tuple[Config, str | None]:
         if "ignore_suffixes" in table:
             kwargs["ignore_suffixes"] = frozenset(str(s) for s in table["ignore_suffixes"])
         if "enabled" in drafter:
-            kwargs["draft_enabled"] = bool(drafter["enabled"])
+            kwargs["draft_enabled"] = _config_bool(drafter["enabled"], "drafter.enabled")
         if "model" in drafter:
             kwargs["draft_model"] = str(drafter["model"])
         if "quiescence_seconds" in drafter:
@@ -138,13 +144,15 @@ def load_config(path: Path | None = None) -> tuple[Config, str | None]:
         if "timeout_seconds" in drafter:
             kwargs["draft_timeout_seconds"] = float(drafter["timeout_seconds"])
         if "include_git_diff" in drafter:
-            kwargs["draft_include_git_diff"] = bool(drafter["include_git_diff"])
+            kwargs["draft_include_git_diff"] = _config_bool(
+                drafter["include_git_diff"], "drafter.include_git_diff")
         if "min_edit_ticks" in drafter:
             kwargs["draft_min_edit_ticks"] = int(drafter["min_edit_ticks"])
         if "max_drafts_per_session" in drafter:
             kwargs["draft_max_drafts_per_session"] = int(drafter["max_drafts_per_session"])
         if "always_on_exit" in drafter:
-            kwargs["draft_always_on_exit"] = bool(drafter["always_on_exit"])
+            kwargs["draft_always_on_exit"] = _config_bool(
+                drafter["always_on_exit"], "drafter.always_on_exit")
         if "command" in drafter:
             cmd = drafter["command"]
             if not isinstance(cmd, list) or not all(isinstance(p, str) for p in cmd):

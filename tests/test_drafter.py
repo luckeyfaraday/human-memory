@@ -54,13 +54,22 @@ class CollectAndSkeleton(unittest.TestCase):
         self.assertTrue(any("TODO" in t for t in info["todos"]))
         self.assertIn("def f", info["diff"])
 
-    def test_collect_captures_untracked_files(self):
-        # A brand-new file is untracked; `git diff HEAD` would miss it but
-        # `git status --porcelain` catches it — the common "agent made a file" case.
+    def test_collect_captures_untracked_files_without_reading_todos(self):
+        # A brand-new file is untracked; list its name, but do not read its
+        # contents into the prompt because it may be private scratch data.
         d = _repo_with_change()
-        (d / "brand_new.py").write_text("print('hi')\n")
+        (d / "brand_new.py").write_text("# TODO: secret scratch context\n")
         info = dr.collect_changes(d)
         self.assertIn("brand_new.py", info["changed_files"])
+        self.assertFalse(any("secret scratch" in t for t in info["todos"]))
+
+    def test_collect_handles_spaces_and_arrows_in_paths(self):
+        d = _repo_with_change()
+        (d / "arrow -> name.txt").write_text("new\n")
+        (d / "space name.txt").write_text("new\n")
+        info = dr.collect_changes(d)
+        self.assertIn("arrow -> name.txt", info["changed_files"])
+        self.assertIn("space name.txt", info["changed_files"])
 
     def test_collect_ignores_memory_artifacts(self):
         d = _repo_with_change()
@@ -93,6 +102,44 @@ class CollectAndSkeleton(unittest.TestCase):
         self.assertEqual(info["changed_files"], ["real.py"])
         self.assertIn("real.py", info["diff"])
         self.assertNotIn("HUMAN_MEMORY.md", info["diff"])
+
+    def test_diff_ignores_memory_artifacts_with_spaces(self):
+        d = Path(tempfile.mkdtemp())
+        _git(d, "init")
+        _git(d, "config", "user.email", "t@t")
+        _git(d, "config", "user.name", "t")
+        (d / "foo bar").mkdir()
+        (d / "foo bar" / "HUMAN_MEMORY.md").write_text("# initial\n")
+        (d / "real.py").write_text("x = 1\n")
+        _git(d, "add", "-A")
+        _git(d, "commit", "-m", "init")
+        (d / "foo bar" / "HUMAN_MEMORY.md").write_text("# changed memory\n")
+        (d / "real.py").write_text("x = 2\n")
+
+        info = dr.collect_changes(d)
+
+        self.assertIn("real.py", info["diff"])
+        self.assertNotIn("foo bar/HUMAN_MEMORY.md", info["diff"])
+
+    def test_diff_ignores_renames_from_memory_artifacts(self):
+        d = Path(tempfile.mkdtemp())
+        _git(d, "init")
+        _git(d, "config", "user.email", "t@t")
+        _git(d, "config", "user.name", "t")
+        (d / "HUMAN_MEMORY.md").write_text("# initial\n")
+        _git(d, "add", "-A")
+        _git(d, "commit", "-m", "init")
+        _git(d, "mv", "HUMAN_MEMORY.md", "notes.md")
+
+        info = dr.collect_changes(d)
+
+        self.assertNotIn("HUMAN_MEMORY.md", info["diff"])
+        self.assertNotIn("notes.md", info["diff"])
+
+    def test_diff_ignores_mode_only_memory_artifact_sections(self):
+        diff = "diff --git a/HUMAN_MEMORY.md b/HUMAN_MEMORY.md\nold mode 100644\nnew mode 100755\n"
+
+        self.assertEqual(dr.filter_memory_artifact_diff(diff), "")
 
     def test_skeleton_has_five_sections(self):
         d = _repo_with_change()
@@ -149,6 +196,11 @@ class RunAgent(unittest.TestCase):
             if orig is not None:
                 dr.DEFAULT_COMMANDS["faux"] = orig
         self.assertEqual(out, "FILE ANSWER")  # file content, not the stdout chrome
+
+    def test_custom_command_outfile_placeholder_is_available(self):
+        b = _fake_bin('printf "CUSTOM FILE ANSWER" > "$1"')
+        out = dr.run_agent(b, "claude", "p", "haiku", 5, command=[b, "{outfile}"])
+        self.assertEqual(out, "CUSTOM FILE ANSWER")
 
     def test_parse_opencode_json(self):
         jsonl = (

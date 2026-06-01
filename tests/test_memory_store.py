@@ -51,6 +51,17 @@ class MemoryStore(unittest.TestCase):
         self.assertEqual(storage, "central")
         self.assertIn("using central", note)
 
+    def test_load_storage_rejects_non_string_value(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "config.toml"
+            p.write_text("[memory]\nstorage = false\n")
+
+            storage, note = memory_store.load_storage(p)
+
+        self.assertEqual(storage, "central")
+        self.assertIn("bad memory.storage", note)
+        self.assertIn("expected string", note)
+
 
 if __name__ == "__main__":
     unittest.main()
