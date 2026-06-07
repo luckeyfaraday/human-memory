@@ -377,16 +377,48 @@ def run_agent(real_bin: str, agent: str, prompt: str, model: str,
 
 def draft_block(root: Path, agent: str, *, real_bin: str | None, model: str,
                 timeout: float, prev_block: str | None, include_git_diff: bool,
-                command: list[str] | None = None) -> str:
+                command: list[str] | None = None) -> tuple[str, dict]:
     """Produce the markdown body for this agent's whiteboard block.
 
     Always returns something usable: the model's polished version if available,
-    otherwise the deterministic skeleton.
+    otherwise the deterministic skeleton. The second tuple element is a stats
+    dict with the char counts of every input section, the output, and a
+    `model_called` flag — useful for logging token spend without re-running
+    the drafter. Char counts (chars/4 ≈ tokens) intentionally exclude the
+    agent bootstrap (system prompt, tool defs, CLAUDE.md) since that varies
+    by agent and isn't visible in the prompt we compose.
     """
     info = collect_changes(root, include_git_diff=include_git_diff)
     skeleton = build_skeleton(info)
+    diff_chars = len(info["diff"])
+    skeleton_chars = len(skeleton)
+    prev_block_chars = len(prev_block) if prev_block else 0
     if not real_bin:
-        return skeleton
+        return skeleton, {
+            "diff_chars": diff_chars,
+            "skeleton_chars": skeleton_chars,
+            "prev_block_chars": prev_block_chars,
+            "prompt_chars": 0,
+            "output_chars": 0,
+            "model_called": False,
+        }
     prompt = compose_prompt(prev_block, info, skeleton)
+    prompt_chars = len(prompt)
     polished = run_agent(real_bin, agent, prompt, model, timeout, command=command)
-    return polished or skeleton
+    if polished:
+        return polished, {
+            "diff_chars": diff_chars,
+            "skeleton_chars": skeleton_chars,
+            "prev_block_chars": prev_block_chars,
+            "prompt_chars": prompt_chars,
+            "output_chars": len(polished),
+            "model_called": True,
+        }
+    return skeleton, {
+        "diff_chars": diff_chars,
+        "skeleton_chars": skeleton_chars,
+        "prev_block_chars": prev_block_chars,
+        "prompt_chars": prompt_chars,
+        "output_chars": 0,
+        "model_called": False,
+    }

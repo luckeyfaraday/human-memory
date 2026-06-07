@@ -19,10 +19,11 @@ class WatcherConfig(unittest.TestCase):
         cfg = watcher.Config()
 
         self.assertEqual(cfg.memory_storage, "central")
-        self.assertEqual(cfg.draft_quiescence_seconds, 120)
-        self.assertEqual(cfg.draft_min_edit_ticks, 3)
+        self.assertEqual(cfg.draft_quiescence_seconds, 300)
+        self.assertEqual(cfg.draft_min_edit_ticks, 6)
+        self.assertEqual(cfg.draft_min_diff_chars, 200)
         self.assertEqual(cfg.draft_max_drafts_per_session, 2)
-        self.assertTrue(cfg.draft_always_on_exit)
+        self.assertFalse(cfg.draft_always_on_exit)
 
     def test_memory_storage_config_is_loaded(self):
         with tempfile.TemporaryDirectory() as d:
@@ -71,6 +72,7 @@ class WatcherConfig(unittest.TestCase):
                 "[drafter]\n"
                 "quiescence_seconds = 90\n"
                 "min_edit_ticks = 5\n"
+                "min_diff_chars = 400\n"
                 "max_drafts_per_session = 1\n"
                 "always_on_exit = false\n"
             )
@@ -79,6 +81,7 @@ class WatcherConfig(unittest.TestCase):
 
         self.assertEqual(cfg.draft_quiescence_seconds, 90)
         self.assertEqual(cfg.draft_min_edit_ticks, 5)
+        self.assertEqual(cfg.draft_min_diff_chars, 400)
         self.assertEqual(cfg.draft_max_drafts_per_session, 1)
         self.assertFalse(cfg.draft_always_on_exit)
         self.assertIn("draft_min_edit_ticks", note)
@@ -115,31 +118,57 @@ class WatcherConfig(unittest.TestCase):
 class DraftGates(unittest.TestCase):
     def test_quiescence_requires_min_edits_and_budget(self):
         cfg = watcher.Config(draft_quiescence_seconds=120, draft_min_edit_ticks=3,
-                             draft_max_drafts_per_session=2)
+                             draft_max_drafts_per_session=2, draft_min_diff_chars=0)
 
         self.assertFalse(watcher.should_draft_quiescence(
             drafting=True, unrecorded_edits=2, last_edit_at=0,
             last_seen_newest=10, last_drafted_newest=9, draft_count=0,
-            cfg=cfg, now_value=130))
+            diff_chars=500, cfg=cfg, now_value=130))
         self.assertFalse(watcher.should_draft_quiescence(
             drafting=True, unrecorded_edits=3, last_edit_at=0,
             last_seen_newest=10, last_drafted_newest=9, draft_count=2,
-            cfg=cfg, now_value=130))
+            diff_chars=500, cfg=cfg, now_value=130))
         self.assertTrue(watcher.should_draft_quiescence(
             drafting=True, unrecorded_edits=3, last_edit_at=0,
             last_seen_newest=10, last_drafted_newest=9, draft_count=1,
-            cfg=cfg, now_value=130))
+            diff_chars=500, cfg=cfg, now_value=130))
 
     def test_exit_draft_is_separate_from_mid_session_budget(self):
-        cfg = watcher.Config(draft_max_drafts_per_session=0, draft_always_on_exit=True)
+        cfg = watcher.Config(draft_max_drafts_per_session=0, draft_always_on_exit=True,
+                             draft_min_diff_chars=0)
 
         self.assertTrue(watcher.should_draft_exit(
             drafting=True, unrecorded_edits=1, last_seen_newest=10,
-            last_drafted_newest=9, cfg=cfg))
+            last_drafted_newest=9, diff_chars=500, cfg=cfg))
         self.assertFalse(watcher.should_draft_exit(
             drafting=True, unrecorded_edits=1, last_seen_newest=10,
-            last_drafted_newest=9,
+            last_drafted_newest=9, diff_chars=500,
             cfg=watcher.Config(draft_always_on_exit=False)))
+
+    def test_min_diff_chars_gates_quiescence(self):
+        cfg = watcher.Config(draft_quiescence_seconds=0, draft_min_edit_ticks=1,
+                             draft_max_drafts_per_session=99, draft_min_diff_chars=500)
+
+        # diff below threshold → skip the LLM call
+        self.assertFalse(watcher.should_draft_quiescence(
+            drafting=True, unrecorded_edits=10, last_edit_at=0,
+            last_seen_newest=10, last_drafted_newest=9, draft_count=0,
+            diff_chars=499, cfg=cfg, now_value=10))
+        # diff at or above threshold → fire
+        self.assertTrue(watcher.should_draft_quiescence(
+            drafting=True, unrecorded_edits=10, last_edit_at=0,
+            last_seen_newest=10, last_drafted_newest=9, draft_count=0,
+            diff_chars=500, cfg=cfg, now_value=10))
+
+    def test_min_diff_chars_gates_exit(self):
+        cfg = watcher.Config(draft_always_on_exit=True, draft_min_diff_chars=100)
+
+        self.assertFalse(watcher.should_draft_exit(
+            drafting=True, unrecorded_edits=5, last_seen_newest=10,
+            last_drafted_newest=9, diff_chars=99, cfg=cfg))
+        self.assertTrue(watcher.should_draft_exit(
+            drafting=True, unrecorded_edits=5, last_seen_newest=10,
+            last_drafted_newest=9, diff_chars=100, cfg=cfg))
 
 
 class BootstrapMemory(unittest.TestCase):
